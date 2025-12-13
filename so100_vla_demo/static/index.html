@@ -35,7 +35,7 @@
       main {
         flex: 1;
         display: grid;
-        grid-template-columns: 2fr 1.2fr;
+        grid-template-columns: 1.6fr 1fr;
         gap: 0.5rem;
         padding: 0.5rem;
         min-height: 0;
@@ -138,6 +138,74 @@
         outline: none;
         border-color: #2d6cdf;
       }
+      #right-column {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        min-height: 0;
+      }
+      #teleop-section {
+        flex: 1;
+      }
+      #teleop-form {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.35rem 0.5rem;
+        padding: 0.6rem 0.75rem 0.4rem;
+        font-size: 0.85rem;
+      }
+      #teleop-form label {
+        display: block;
+        margin-bottom: 0.15rem;
+        color: #c6cbd3;
+      }
+      #teleop-form select,
+      #teleop-form input {
+        width: 100%;
+        background: #111;
+        border: 1px solid #333;
+        border-radius: 4px;
+        color: #f5f5f5;
+        padding: 0.35rem 0.45rem;
+      }
+      #teleop-form input:focus,
+      #teleop-form select:focus {
+        outline: none;
+        border-color: #2d6cdf;
+      }
+      #teleop-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.2rem 0.75rem 0.65rem;
+        border-top: 1px solid #333;
+      }
+      #teleop-status {
+        font-size: 0.85rem;
+        color: #c6cbd3;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.8rem;
+        margin-top: 0.35rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.25rem 0.4rem;
+      }
+      th {
+        color: #c6cbd3;
+        font-weight: 600;
+        border-bottom: 1px solid #333;
+      }
+      td {
+        border-bottom: 1px solid #222;
+      }
+      .muted {
+        color: #9aa0a6;
+      }
       footer {
         padding: 0.3rem 0.75rem;
         font-size: 0.75rem;
@@ -179,19 +247,57 @@
         </div>
       </section>
 
-      <section id="chat-section">
-        <h2>Chat & Reasoning</h2>
-        <div id="chat-log"></div>
-        <div id="reasoning-log"></div>
-        <div id="chat-input-row">
-          <input
-            id="chat-input"
-            type="text"
-            placeholder="Ask the model about the scene..."
-          />
-          <button id="send-chat-btn" disabled>Send</button>
-        </div>
-      </section>
+      <div id="right-column">
+        <section id="chat-section">
+          <h2>Chat & Reasoning</h2>
+          <div id="chat-log"></div>
+          <div id="reasoning-log"></div>
+          <div id="chat-input-row">
+            <input
+              id="chat-input"
+              type="text"
+              placeholder="Ask the model about the scene..."
+            />
+            <button id="send-chat-btn" disabled>Send</button>
+          </div>
+        </section>
+
+        <section id="teleop-section">
+          <h2>Teleop Control</h2>
+          <div id="teleop-form">
+            <div>
+              <label for="teleop-id-select">Leader arm id</label>
+              <select id="teleop-id-select"></select>
+            </div>
+            <div>
+              <label for="teleop-port-input">Leader port</label>
+              <input id="teleop-port-input" placeholder="/dev/ttyACM1" />
+            </div>
+            <div>
+              <label for="robot-id-select">Follower arm id</label>
+              <select id="robot-id-select"></select>
+            </div>
+            <div>
+              <label for="robot-port-input">Follower port</label>
+              <input id="robot-port-input" placeholder="/dev/ttyACM0" />
+            </div>
+          </div>
+          <div id="teleop-actions">
+            <button id="save-ports-btn">Save Ports</button>
+            <button id="start-teleop-btn">Start Teleop</button>
+            <button id="stop-teleop-btn" class="secondary" disabled>
+              Stop
+            </button>
+            <div id="teleop-status" class="muted">Idle</div>
+          </div>
+          <div style="padding: 0 0.75rem 0.65rem">
+            <div class="muted" style="font-size: 0.82rem">
+              Calibration files detected under <code id="calib-root"></code>.
+            </div>
+            <div id="devices-table-wrapper"></div>
+          </div>
+        </section>
+      </div>
     </main>
 
     <footer>
@@ -203,6 +309,7 @@
     <script>
       let ws = null;
       let isConnected = false;
+      let deviceConfig = { devices: [], ports_file: "", calibration_root: "" };
 
       const connectBtn = document.getElementById("connect-btn");
       const disconnectBtn = document.getElementById("disconnect-btn");
@@ -218,6 +325,18 @@
       const reasoningLog = document.getElementById("reasoning-log");
       const statusText = document.getElementById("status-text");
       const phaseIndicator = document.getElementById("phase-indicator");
+      const teleopIdSelect = document.getElementById("teleop-id-select");
+      const teleopPortInput = document.getElementById("teleop-port-input");
+      const robotIdSelect = document.getElementById("robot-id-select");
+      const robotPortInput = document.getElementById("robot-port-input");
+      const startTeleopBtn = document.getElementById("start-teleop-btn");
+      const stopTeleopBtn = document.getElementById("stop-teleop-btn");
+      const savePortsBtn = document.getElementById("save-ports-btn");
+      const devicesTableWrapper = document.getElementById(
+        "devices-table-wrapper"
+      );
+      const calibRootEl = document.getElementById("calib-root");
+      const teleopStatusEl = document.getElementById("teleop-status");
 
       function setPhase(phase) {
         phaseIndicator.textContent = phase || "Idle";
@@ -260,6 +379,194 @@
         if (!connected) {
           setPhase("Idle");
         }
+      }
+
+      function renderDevicesTable() {
+        if (!deviceConfig.devices.length) {
+          devicesTableWrapper.innerHTML =
+            '<div class="muted">No calibration files detected yet.</div>';
+          return;
+        }
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        const headerRow = document.createElement("tr");
+        ["Role", "Type", "ID", "Port", "Calibration"].forEach((h) => {
+          const th = document.createElement("th");
+          th.textContent = h;
+          headerRow.appendChild(th);
+        });
+        thead.appendChild(headerRow);
+        table.appendChild(thead);
+
+        const tbody = document.createElement("tbody");
+        deviceConfig.devices.forEach((d) => {
+          const tr = document.createElement("tr");
+          const cells = [
+            d.role,
+            d.type,
+            d.id,
+            d.port || "(unset)",
+            d.calibration_path,
+          ];
+          cells.forEach((val) => {
+            const td = document.createElement("td");
+            td.textContent = val;
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        devicesTableWrapper.innerHTML = "";
+        devicesTableWrapper.appendChild(table);
+      }
+
+      function fillDeviceSelects() {
+        const teleops = deviceConfig.devices.filter((d) => d.role === "teleop");
+        const robots = deviceConfig.devices.filter((d) => d.role === "robot");
+
+        teleopIdSelect.innerHTML = "";
+        robotIdSelect.innerHTML = "";
+
+        teleops.forEach((d) => {
+          const opt = document.createElement("option");
+          opt.value = d.id;
+          opt.textContent = `${d.id} (${d.type})`;
+          teleopIdSelect.appendChild(opt);
+        });
+
+        robots.forEach((d) => {
+          const opt = document.createElement("option");
+          opt.value = d.id;
+          opt.textContent = `${d.id} (${d.type})`;
+          robotIdSelect.appendChild(opt);
+        });
+
+        if (teleops.length) {
+          teleopIdSelect.value = teleops[0].id;
+          teleopPortInput.value = teleops[0].port || "";
+        }
+        if (robots.length) {
+          robotIdSelect.value = robots[0].id;
+          robotPortInput.value = robots[0].port || "";
+        }
+      }
+
+      async function refreshDeviceConfig() {
+        try {
+          const res = await fetch("/api/device-config");
+          const data = await res.json();
+          deviceConfig = data;
+          calibRootEl.textContent = deviceConfig.calibration_root || "";
+          renderDevicesTable();
+          fillDeviceSelects();
+        } catch (err) {
+          console.error(err);
+          appendReasoning("Could not load device config from backend.");
+        }
+      }
+
+      function applyPortForSelection(role) {
+        const targetId =
+          role === "teleop" ? teleopIdSelect.value : robotIdSelect.value;
+        const match = deviceConfig.devices.find(
+          (d) => d.role === role && d.id === targetId
+        );
+        if (role === "teleop") {
+          teleopPortInput.value = match?.port || "";
+        } else {
+          robotPortInput.value = match?.port || "";
+        }
+      }
+
+      async function savePorts() {
+        const payloads = [
+          {
+            role: "teleop",
+            type: "so100_leader",
+            id: teleopIdSelect.value,
+            port: teleopPortInput.value.trim(),
+          },
+          {
+            role: "robot",
+            type: "so100_follower",
+            id: robotIdSelect.value,
+            port: robotPortInput.value.trim(),
+          },
+        ];
+        try {
+          for (const body of payloads) {
+            if (!body.id || !body.port) continue;
+            await fetch("/api/device-config", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+          }
+          appendReasoning("Saved ports to device store.");
+          await refreshDeviceConfig();
+        } catch (err) {
+          console.error(err);
+          appendReasoning("Failed to save ports.");
+        }
+      }
+
+      async function updateTeleopStatus() {
+        try {
+          const res = await fetch("/api/teleop/status");
+          const data = await res.json();
+          const running = data.running;
+          teleopStatusEl.textContent = running
+            ? `Running (pid ${data.pid || "?"})`
+            : "Idle";
+          startTeleopBtn.disabled = running;
+          stopTeleopBtn.disabled = !running;
+        } catch {
+          teleopStatusEl.textContent = "Idle";
+        }
+      }
+
+      async function startTeleop() {
+        const teleopId = teleopIdSelect.value;
+        const robotId = robotIdSelect.value;
+        const teleopPort = teleopPortInput.value.trim();
+        const robotPort = robotPortInput.value.trim();
+        if (!teleopId || !robotId) {
+          appendReasoning("Select both leader and follower ids first.");
+          return;
+        }
+        try {
+          const res = await fetch("/api/teleop/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              teleop_id: teleopId,
+              robot_id: robotId,
+              teleop_port: teleopPort || null,
+              robot_port: robotPort || null,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json();
+            appendReasoning(`Teleop start failed: ${err.detail || res.status}`);
+          } else {
+            appendReasoning("Teleop loop launched.");
+          }
+        } catch (err) {
+          console.error(err);
+          appendReasoning("Failed to start teleop loop.");
+        }
+        await updateTeleopStatus();
+      }
+
+      async function stopTeleop() {
+        try {
+          await fetch("/api/teleop/stop", { method: "POST" });
+          appendReasoning("Teleop loop stopped.");
+        } catch (err) {
+          console.error(err);
+          appendReasoning("Failed to stop teleop loop.");
+        }
+        await updateTeleopStatus();
       }
 
       function connectWs() {
@@ -382,7 +689,16 @@
           sendChatBtn.click();
         }
       });
+
+      teleopIdSelect.addEventListener("change", () => applyPortForSelection("teleop"));
+      robotIdSelect.addEventListener("change", () => applyPortForSelection("robot"));
+      savePortsBtn.addEventListener("click", savePorts);
+      startTeleopBtn.addEventListener("click", startTeleop);
+      stopTeleopBtn.addEventListener("click", stopTeleop);
+
+      refreshDeviceConfig();
+      updateTeleopStatus();
+      setInterval(updateTeleopStatus, 4000);
     </script>
   </body>
   </html>
-

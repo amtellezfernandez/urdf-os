@@ -30,14 +30,17 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import time
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, Set
+from typing import Any, Dict, Literal, Set
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from PIL import Image
 
 from .config import SO100DemoConfig
@@ -45,6 +48,7 @@ from .llm_config import LLMConfig
 from .llm_engine import BaseLLMEngine, StubEngine, make_llm_engine
 from .mock_robot_interface import MockRobotInterface
 from .robot_interface import SO100RobotInterface, make_robot_interface
+from lerobot.utils.constants import HF_LEROBOT_CALIBRATION
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +114,134 @@ robot_interface = make_robot_interface(demo_cfg)
 streaming = False
 stream_task: asyncio.Task | None = None
 behavior_task: asyncio.Task | None = None
+# Teleop process state
+teleop_process: asyncio.subprocess.Process | None = None
+teleop_process_cmd: list[str] = []
+teleop_process_started_at: float | None = None
+teleop_process_lock = asyncio.Lock()
+
+# Device config / calibration discovery
+DEVICE_PORTS_FILE = HF_LEROBOT_CALIBRATION / "device_ports.json"
+
+
+class DevicePortUpdate(BaseModel):
+    role: Literal["teleop", "robot"]
+    type: str
+    id: str
+    port: str
+
+
+class TeleopStartRequest(BaseModel):
+    teleop_id: str
+    robot_id: str
+    teleop_port: str | None = None
+    robot_port: str | None = None
+    teleop_type: str = "so100_leader"
+    robot_type: str = "so100_follower"
+    fps: int = 60
+    display_data: bool = False
+
+
+def _load_device_ports() -> Dict[str, Dict[str, Dict[str, str]]]:
+    if DEVICE_PORTS_FILE.is_file():
+        try:
+            return json.loads(DEVICE_PORTS_FILE.read_text())
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not read device ports file %s: %s", DEVICE_PORTS_FILE, e)
+    return {"teleop": {}, "robot": {}}
+
+
+def _save_device_ports(data: Dict[str, Dict[str, Dict[str, str]]]) -> None:
+    DEVICE_PORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DEVICE_PORTS_FILE.write_text(json.dumps(data, indent=2))
+
+
+def _discover_devices() -> list[Dict[str, Any]]:
+    """
+    Look for calibration files written by `lerobot-calibrate` and merge with
+    locally stored port hints so the UI can show `id -> port` mappings.
+    """
+    devices: list[Dict[str, Any]] = []
+    port_map = _load_device_ports()
+
+    def _role_from_dir(role_dir: str) -> Literal["teleop", "robot"] | None:
+        if role_dir == "teleoperators":
+            return "teleop"
+        if role_dir == "robots":
+            return "robot"
+        return None
+
+    if not HF_LEROBOT_CALIBRATION.exists():
+        return devices
+
+    for role_dir in ("teleoperators", "robots"):
+        role_root = HF_LEROBOT_CALIBRATION / role_dir
+        role_key = _role_from_dir(role_dir)
+        if role_key is None or not role_root.is_dir():
+            continue
+        for type_dir in role_root.iterdir():
+            if not type_dir.is_dir():
+                continue
+            for calib_file in type_dir.glob("*.json"):
+                device_id = calib_file.stem
+                devices.append(
+                    {
+                        "role": role_key,
+                        "type": type_dir.name,
+                        "id": device_id,
+                        "calibration_path": str(calib_file),
+                        "calibration_mtime": os.path.getmtime(calib_file),
+                        "port": port_map.get(role_key, {}).get(type_dir.name, {}).get(device_id),
+                    }
+                )
+    devices.sort(key=lambda d: (d["role"], d["type"], d["id"]))
+    return devices
+
+
+async def _stop_teleop_process(force: bool = False) -> None:
+    """
+    Stop the background lerobot-teleoperate process if running.
+    """
+    global teleop_process, teleop_process_cmd, teleop_process_started_at
+    if teleop_process is None:
+        return
+    if teleop_process.returncode is not None:
+        teleop_process = None
+        teleop_process_cmd = []
+        teleop_process_started_at = None
+        return
+
+    teleop_process.terminate()
+    try:
+        await asyncio.wait_for(teleop_process.wait(), timeout=5 if not force else 1)
+    except asyncio.TimeoutError:
+        teleop_process.kill()
+    teleop_process = None
+    teleop_process_cmd = []
+    teleop_process_started_at = None
+
+
+async def _pipe_subprocess_output(proc: asyncio.subprocess.Process, name: str) -> None:
+    """
+    Drain stdout/stderr of a subprocess to avoid blocking and emit to logger.
+    """
+    assert proc.stdout is not None and proc.stderr is not None
+
+    async def _reader(stream: asyncio.StreamReader, log_fn) -> None:
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            try:
+                decoded = line.decode("utf-8", errors="replace").rstrip()
+            except Exception:
+                decoded = str(line)
+            log_fn("%s | %s", name, decoded)
+
+    await asyncio.gather(
+        _reader(proc.stdout, logger.info),
+        _reader(proc.stderr, logger.error),
+    )
 
 
 async def camera_stream_loop() -> None:
@@ -332,6 +464,92 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except Exception as e:  # noqa: BLE001
         logger.error("WebSocket error: %s", e)
         await manager.disconnect(websocket)
+
+
+# REST endpoints -------------------------------------------------------------
+
+
+@app.get("/api/device-config")
+async def get_device_config() -> Dict[str, Any]:
+    """
+    Expose the calibration root and discovered devices (ids + optional port hints).
+    """
+    return {
+        "calibration_root": str(HF_LEROBOT_CALIBRATION),
+        "ports_file": str(DEVICE_PORTS_FILE),
+        "devices": _discover_devices(),
+    }
+
+
+@app.post("/api/device-config")
+async def set_device_port(update: DevicePortUpdate) -> Dict[str, Any]:
+    """
+    Persist a device -> port mapping so the UI can reuse it for teleop.
+    """
+    data = _load_device_ports()
+    data.setdefault(update.role, {}).setdefault(update.type, {})[update.id] = update.port
+    _save_device_ports(data)
+    return {"ok": True, "device": update.dict()}
+
+
+@app.get("/api/teleop/status")
+async def teleop_status() -> Dict[str, Any]:
+    running = teleop_process is not None and teleop_process.returncode is None
+    return {
+        "running": running,
+        "pid": teleop_process.pid if teleop_process else None,
+        "returncode": teleop_process.returncode if teleop_process else None,
+        "cmd": teleop_process_cmd,
+        "started_at": teleop_process_started_at,
+    }
+
+
+@app.post("/api/teleop/start")
+async def start_teleop(req: TeleopStartRequest) -> Dict[str, Any]:
+    """
+    Launch `lerobot-teleoperate` in the background using stored port hints or
+    values provided in the request body.
+    """
+    global teleop_process, teleop_process_cmd, teleop_process_started_at
+    async with teleop_process_lock:
+        if teleop_process is not None and teleop_process.returncode is None:
+            raise HTTPException(status_code=400, detail="Teleop already running.")
+
+        stored_ports = _load_device_ports()
+        teleop_port = req.teleop_port or stored_ports.get("teleop", {}).get(req.teleop_type, {}).get(req.teleop_id)
+        robot_port = req.robot_port or stored_ports.get("robot", {}).get(req.robot_type, {}).get(req.robot_id)
+        if not teleop_port:
+            raise HTTPException(status_code=400, detail="teleop_port is required (not found in device ports store).")
+        if not robot_port:
+            raise HTTPException(status_code=400, detail="robot_port is required (not found in device ports store).")
+
+        cmd = [
+            "lerobot-teleoperate",
+            f"--teleop.type={req.teleop_type}",
+            f"--teleop.port={teleop_port}",
+            f"--teleop.id={req.teleop_id}",
+            f"--robot.type={req.robot_type}",
+            f"--robot.port={robot_port}",
+            f"--robot.id={req.robot_id}",
+            f"--fps={req.fps}",
+            f"--display_data={'true' if req.display_data else 'false'}",
+        ]
+
+        teleop_process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        teleop_process_cmd = cmd
+        teleop_process_started_at = time.time()
+        asyncio.create_task(_pipe_subprocess_output(teleop_process, "teleop"))
+        logger.info("Started teleop process pid=%s cmd=%s", teleop_process.pid, cmd)
+        return {"ok": True, "pid": teleop_process.pid, "cmd": cmd}
+
+
+@app.post("/api/teleop/stop")
+async def stop_teleop() -> Dict[str, Any]:
+    async with teleop_process_lock:
+        await _stop_teleop_process()
+    return {"ok": True}
 
 
 # Static files (frontend) -----------------------------------------------------
