@@ -12,9 +12,11 @@ cd urdf-os
 conda create -n lerobot python=3.10 -y
 conda activate lerobot
 
-# Install dependencies
-pip install -e ./src
-pip install fastmcp opencv-python pillow torch
+# Install lerobot from repo root
+pip install -e .
+
+# Install additional dependencies for MCP server
+pip install fastmcp
 ```
 
 ### 2. Hardware Permissions (Linux)
@@ -52,7 +54,9 @@ python -m so100_vla_demo.demo_script
 
 ### 4. Run MCP Server (AI Controls Robot via Claude Code)
 
-**Step 1:** Configure `.mcp.json` in repo root (update paths for YOUR machine):
+**Step 1:** Create `.mcp.json` in the repo root (per-developer; not committed).
+
+We ship a template: copy `.mcp.example.json` → `.mcp.json`, then update paths for YOUR machine:
 ```bash
 # Find your values:
 which python                    # → e.g. /home/USER/miniconda3/envs/lerobot/bin/python
@@ -73,7 +77,7 @@ Then edit `.mcp.json`:
         "PYTHONPATH": "/home/USER/urdf-os/src",
         "SO100_CAMERA_SOURCES": "/dev/video4,/dev/video6",
         "SO100_CAMERA_NAMES": "wrist,overhead",
-        "SO100_PORT": "/dev/ttyACM0",
+        "SO100_PORT": "auto",
         "SMOLVLA_POLICY_ID": "Gurkinator/smolvla_so100_policy"
       }
     }
@@ -99,6 +103,9 @@ get_skill_status("skill_xxx")
 stop_skill("skill_xxx")  # interrupt if needed
 ```
 
+Tip: you can also keep policy/checkpoint settings in a shell env file:
+- `so100_vla_demo/checkpoints.example.env` (copy and edit)
+
 ### 5. Demo Flow (AI Agent Controlling Robot)
 
 1. **Claude Code sees** → `get_camera_frame("wrist")`
@@ -106,6 +113,15 @@ stop_skill("skill_xxx")  # interrupt if needed
 3. **Claude Code acts** → `start_skill("smolvla", instruction="pick up the red cup")`
 4. **Claude Code monitors** → `get_skill_status(...)` + `get_camera_frame("wrist")`
 5. **Claude Code stops/replans** → `stop_skill(...)` if needed
+
+### 6. MCP Client Smoke Test (No Claude)
+
+This repo includes a small client that spawns the MCP server and calls tools:
+
+```bash
+python -m so100_vla_demo.mcp_client_demo
+python -m so100_vla_demo.mcp_client_demo --policy Gurkinator/smolvla_so100_policy --steps 2
+```
 
 ---
 
