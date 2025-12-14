@@ -165,14 +165,15 @@ Supported `action` values:
 
 - `SO100DemoConfig` fields:
   - `port`: SO100 serial port (default `/dev/ttyUSB0`, or `SO100_PORT`).
-  - `camera_index`: wrist camera index (default `0`, or `SO100_CAMERA_INDEX`).
+  - `camera_indexes`: camera sources (OpenCV indices or `/dev/video*` paths) from `SO100_CAMERA_SOURCES` / `SO100_CAMERA_INDEXES` / legacy `SO100_CAMERA_INDEX`.
   - `demo_fps`: streaming/control FPS (default `15`).
   - `use_mock`: from `USE_MOCK_ROBOT` (`"1"/"true"/"yes"` → True).
+  - `use_real_cameras`: when `use_mock=True`, stream from real cameras if `USE_REAL_CAMERAS=true`.
   - `mock_video_path`: optional video file path (`MOCK_VIDEO_PATH` env).
   - `mock_static_image_path`: optional static image path (`MOCK_STATIC_IMAGE_PATH` env).
   - `search_policy_path`, `grasp_policy_path`: optional paths to trained policies.
 - `to_robot_config()`:
-  - Builds a `SO100FollowerConfig` with a `wrist` OpenCV camera.
+  - Builds a `SO100FollowerConfig` with one `OpenCVCameraConfig` per configured camera.
 
 ### 2.2 Real Robot Interface
 
@@ -180,11 +181,11 @@ Supported `action` values:
 
 - `SO100RobotInterface`:
   - `config: SO100FollowerConfig`.
-  - `connect()` → creates `SO100Follower(config)` and calls `connect()`.
+  - `connect()` → best-effort auto-detects serial port if needed and calls `SO100Follower.connect(calibrate=...)` (controlled by `SO100_CALIBRATE`).
   - `disconnect()` → calls `robot.disconnect()`.
   - `get_observation()`:
     - Calls `robot.get_observation()` (LeRobot).
-    - Extracts first camera frame and joint positions (`{name: obs[f"{name}.pos"]}`).
+    - Extracts all configured camera frames and joint positions (`{name: obs[f"{name}.pos"]}`).
   - `send_joint_targets(joint_targets)`:
     - Converts to `{f"{name}.pos": value}` and calls `robot.send_action(action)`.
 - `make_robot_interface(cfg: SO100DemoConfig)`:
@@ -419,4 +420,3 @@ Once policies and detection are ready:
 - Add safety constraints (workspace limits, timeouts, emergency stop).
 
 This document, together with `ARCHITECTURE_HIGH_LEVEL.md` and `README.md`, should give your teammates everything they need to understand and extend the SO100 demo for the hackathon.+
-

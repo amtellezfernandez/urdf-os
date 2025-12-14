@@ -34,6 +34,8 @@ class MockRobotInterface:
     )
     _static_image: np.ndarray | None = None
     _video_cap: "cv2.VideoCapture | None" = None  # type: ignore[name-defined]
+    _real_camera_caps: Dict[str, "cv2.VideoCapture"] | None = None  # type: ignore[name-defined]
+    _last_real_frames: Dict[str, np.ndarray] = field(default_factory=dict)
     _frame_index: int = 0
     _connected: bool = False
 
@@ -42,6 +44,37 @@ class MockRobotInterface:
             return
         self._connected = True
         logger.info("MockRobotInterface connected (mock mode).")
+
+        # Optional: use real cameras even in mock mode (for UI streaming/debug).
+        # This is best-effort: if a camera fails to open, we fall back to synthetic frames.
+        if self.cfg.use_real_cameras and cv2 is not None:
+            self._real_camera_caps = {}
+            cam_names = self.cfg.get_camera_names()
+            for name, source in zip(cam_names, self.cfg.camera_indexes):
+                try:
+                    cap_source = int(source) if isinstance(source, int) else str(source)
+                    cap = cv2.VideoCapture(cap_source)
+                    if not cap.isOpened():
+                        cap.release()
+                        logger.warning("Could not open real camera %s (%s); using synthetic fallback.", name, source)
+                        continue
+                    if self.cfg.camera_fourcc:
+                        try:
+                            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self.cfg.camera_fourcc))
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if self.cfg.camera_width:
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.cfg.camera_width))
+                    if self.cfg.camera_height:
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.cfg.camera_height))
+                    if self.cfg.camera_fps:
+                        cap.set(cv2.CAP_PROP_FPS, float(self.cfg.camera_fps))
+                    self._real_camera_caps[name] = cap
+                    logger.info("Opened real camera %s (%s)", name, source)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Error opening real camera %s (%s): %s", name, source, e)
+            if not self._real_camera_caps:
+                self._real_camera_caps = None
 
         # Lazy-load static image if configured.
         if self.cfg.mock_static_image_path:
@@ -72,22 +105,34 @@ class MockRobotInterface:
             except Exception:  # noqa: BLE001
                 pass
         self._video_cap = None
+        if self._real_camera_caps:
+            for cap in self._real_camera_caps.values():
+                try:
+                    cap.release()
+                except Exception:  # noqa: BLE001
+                    pass
+        self._real_camera_caps = None
+        self._last_real_frames.clear()
         self._connected = False
         logger.info("MockRobotInterface disconnected.")
 
     # Public API expected by the rest of the demo ---------------------
 
-    def get_observation(self) -> Tuple[np.ndarray, Dict[str, float]]:
+    def get_observation(self) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
         """
         Returns:
-            image: HxWxC uint8 RGB array.
+            images: dict of camera_name -> HxWxC uint8 RGB array for each configured camera.
             joints: dict of fake joint positions.
         """
         if not self._connected:
             raise RuntimeError("MockRobotInterface not connected.")
 
-        frame = self._get_frame()
-        return frame, dict(self.joints)
+        camera_names = self.cfg.get_camera_names()
+        images: Dict[str, np.ndarray] = {}
+        for name in camera_names:
+            frame = self._get_frame(camera_name=name)
+            images[name] = frame.copy()
+        return images, dict(self.joints)
 
     def send_joint_targets(self, joint_targets: Dict[str, float]) -> None:
         """
@@ -110,13 +155,28 @@ class MockRobotInterface:
         img = Image.open(path).convert("RGB")
         return np.array(img, dtype=np.uint8)
 
-    def _get_frame(self) -> np.ndarray:
+    def _get_frame(self, camera_name: str | None = None) -> np.ndarray:
         """
         Choose the appropriate image source in this order:
+        0. Real camera (if enabled and available).
         1. Video file (if configured and available).
         2. Static image (if configured).
         3. Synthetic scene.
         """
+        # 0) Real camera source (best-effort per camera).
+        if self._real_camera_caps is not None and cv2 is not None and camera_name is not None:
+            cap = self._real_camera_caps.get(camera_name)
+            if cap is not None:
+                ret, frame_bgr = cap.read()
+                if ret and frame_bgr is not None:
+                    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)  # type: ignore[arg-type]
+                    self._last_real_frames[camera_name] = frame_rgb
+                    return frame_rgb
+                # If a read fails, reuse last good frame if any.
+                last = self._last_real_frames.get(camera_name)
+                if last is not None:
+                    return last
+
         # 1) Video source
         if self._video_cap is not None:
             ret, frame_bgr = self._video_cap.read()
@@ -177,4 +237,3 @@ def make_mock_robot_interface(cfg: SO100DemoConfig) -> MockRobotInterface:
     """
 
     return MockRobotInterface(cfg=cfg)
-

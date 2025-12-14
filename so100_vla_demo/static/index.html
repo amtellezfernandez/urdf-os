@@ -60,6 +60,34 @@
         align-items: center;
         justify-content: center;
         background: #000;
+        padding: 0.5rem;
+      }
+      #camera-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 0.5rem;
+        width: 100%;
+        height: 100%;
+      }
+      .camera-panel {
+        display: flex;
+        flex-direction: column;
+        background: #222;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .camera-label {
+        padding: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+        color: #9aa0a6;
+        border-bottom: 1px solid #333;
+        text-transform: capitalize;
+      }
+      .camera-feed {
+        width: 100%;
+        height: auto;
+        object-fit: contain;
+        background: #000;
       }
       #video {
         max-width: 100%;
@@ -217,15 +245,17 @@
   </head>
   <body>
     <header>
-      <h1>SO100 VLA Demo (Mock‑Ready)</h1>
+      <h1>SO100 VLA Demo</h1>
       <div id="phase-indicator">Idle</div>
     </header>
 
     <main>
       <section id="video-section">
-        <h2>Camera</h2>
+        <h2>Cameras</h2>
         <div id="video-container">
-          <img id="video" alt="Camera feed will appear here" />
+          <div id="camera-grid">
+            <!-- Camera panels will be dynamically created -->
+          </div>
         </div>
         <div id="controls">
           <button id="connect-btn">Connect</button>
@@ -233,13 +263,6 @@
           <button id="start-stream-btn" disabled>Start Stream</button>
           <button id="stop-stream-btn" disabled class="secondary">
             Stop Stream
-          </button>
-          <button id="find-red-btn" disabled>Find Red Cup</button>
-          <button id="find-blue-btn" disabled class="secondary">
-            Find Blue Block
-          </button>
-          <button id="find-green-btn" disabled class="secondary">
-            Find Green Ball
           </button>
         </div>
         <div id="status-bar">
@@ -256,7 +279,7 @@
             <input
               id="chat-input"
               type="text"
-              placeholder="Ask the model about the scene..."
+              placeholder="Chat (try: /stream on, /stream off, /help)"
             />
             <button id="send-chat-btn" disabled>Send</button>
           </div>
@@ -301,9 +324,7 @@
     </main>
 
     <footer>
-      This UI talks to the FastAPI WebSocket server at
-      <code>/ws</code>. In mock mode
-      (<code>USE_MOCK_ROBOT=true</code>), everything runs without hardware.
+      SO100 VLA Demo (VLM stubbed by default). Use <code>USE_MOCK_ROBOT=true</code> for mock mode.
     </footer>
 
     <script>
@@ -315,13 +336,13 @@
       const disconnectBtn = document.getElementById("disconnect-btn");
       const startStreamBtn = document.getElementById("start-stream-btn");
       const stopStreamBtn = document.getElementById("stop-stream-btn");
-      const findRedBtn = document.getElementById("find-red-btn");
-      const findBlueBtn = document.getElementById("find-blue-btn");
-      const findGreenBtn = document.getElementById("find-green-btn");
       const sendChatBtn = document.getElementById("send-chat-btn");
       const chatInput = document.getElementById("chat-input");
-      const videoImg = document.getElementById("video");
+      const cameraGrid = document.getElementById("camera-grid");
       const chatLog = document.getElementById("chat-log");
+
+      // Track known cameras for dynamic panel creation
+      const knownCameras = new Set();
       const reasoningLog = document.getElementById("reasoning-log");
       const statusText = document.getElementById("status-text");
       const phaseIndicator = document.getElementById("phase-indicator");
@@ -370,9 +391,6 @@
         disconnectBtn.disabled = !connected;
         startStreamBtn.disabled = !connected;
         stopStreamBtn.disabled = !connected;
-        findRedBtn.disabled = !connected;
-        findBlueBtn.disabled = !connected;
-        findGreenBtn.disabled = !connected;
         sendChatBtn.disabled = !connected;
         chatInput.disabled = !connected;
         statusText.textContent = connected ? "Connected" : "Disconnected";
@@ -578,6 +596,8 @@
         ws.onopen = () => {
           setConnectedUi(true);
           appendReasoning("WebSocket connected.");
+          // Convenience: start streaming immediately so cameras are visible.
+          sendJson({ type: "command", action: "start_stream" });
         };
 
         ws.onclose = () => {
@@ -599,11 +619,49 @@
         };
       }
 
+      function ensureCameraPanel(camName) {
+        if (knownCameras.has(camName)) {
+          return document.getElementById(`video-${camName}`);
+        }
+        // Create new camera panel
+        const panel = document.createElement("div");
+        panel.classList.add("camera-panel");
+        panel.id = `panel-${camName}`;
+
+        const label = document.createElement("div");
+        label.classList.add("camera-label");
+        label.textContent = camName;
+
+        const img = document.createElement("img");
+        img.classList.add("camera-feed");
+        img.id = `video-${camName}`;
+        img.alt = `${camName} camera`;
+
+        panel.appendChild(label);
+        panel.appendChild(img);
+        cameraGrid.appendChild(panel);
+        knownCameras.add(camName);
+        return img;
+      }
+
       function handleMessage(msg) {
         const type = msg.type;
         if (type === "frame") {
-          if (msg.image_b64) {
-            videoImg.src = `data:image/jpeg;base64,${msg.image_b64}`;
+          // Handle multi-camera frames
+          if (msg.cameras) {
+            for (const [camName, camData] of Object.entries(msg.cameras)) {
+              const imgEl = ensureCameraPanel(camName);
+              if (imgEl && camData.image_b64) {
+                imgEl.src = `data:image/jpeg;base64,${camData.image_b64}`;
+              }
+            }
+          }
+          // Backward compatibility: single image_b64
+          if (msg.image_b64 && !msg.cameras) {
+            const imgEl = ensureCameraPanel("wrist");
+            if (imgEl) {
+              imgEl.src = `data:image/jpeg;base64,${msg.image_b64}`;
+            }
           }
         } else if (type === "chat") {
           appendChat("assistant", msg.text || "");
@@ -649,30 +707,6 @@
 
       stopStreamBtn.addEventListener("click", () => {
         sendJson({ type: "command", action: "stop_stream" });
-      });
-
-      findRedBtn.addEventListener("click", () => {
-        sendJson({
-          type: "command",
-          action: "search_and_grasp",
-          object: "red cup",
-        });
-      });
-
-      findBlueBtn.addEventListener("click", () => {
-        sendJson({
-          type: "command",
-          action: "search_and_grasp",
-          object: "blue block",
-        });
-      });
-
-      findGreenBtn.addEventListener("click", () => {
-        sendJson({
-          type: "command",
-          action: "search_and_grasp",
-          object: "green ball",
-        });
       });
 
       sendChatBtn.addEventListener("click", () => {

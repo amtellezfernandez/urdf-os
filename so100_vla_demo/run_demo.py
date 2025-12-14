@@ -51,7 +51,13 @@ def parse_args() -> argparse.Namespace:
         "--camera-index",
         type=int,
         default=None,
-        help="OpenCV camera index for the wrist camera. Overrides SO100_CAMERA_INDEX env var.",
+        help="OpenCV camera index for the wrist camera (single-camera). Overrides SO100_CAMERA_INDEX env var.",
+    )
+    parser.add_argument(
+        "--camera-sources",
+        type=str,
+        default=None,
+        help="Comma-separated camera sources (e.g. '0,2,/dev/video4'). Overrides SO100_CAMERA_SOURCES env var.",
     )
     return parser.parse_args()
 
@@ -63,8 +69,19 @@ def main() -> None:
     cfg_kwargs: dict[str, Any] = {}
     if args.so100_port is not None:
         cfg_kwargs["port"] = args.so100_port
-    if args.camera_index is not None:
-        cfg_kwargs["camera_index"] = args.camera_index
+    if args.camera_sources is not None:
+        sources = []
+        for token in args.camera_sources.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                sources.append(int(token))
+            except ValueError:
+                sources.append(Path(token).expanduser())
+        cfg_kwargs["camera_indexes"] = sources
+    elif args.camera_index is not None:
+        cfg_kwargs["camera_indexes"] = [args.camera_index]
 
     cfg = SO100DemoConfig(**cfg_kwargs)
 

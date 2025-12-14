@@ -67,9 +67,11 @@ So we treat:
 - `config.py`
   - `SO100DemoConfig`:
     - `port`: SO100 serial port (`SO100_PORT` env or `/dev/ttyUSB0`).
-    - `camera_index`: OpenCV index for wrist camera (`SO100_CAMERA_INDEX` env or `0`).
+    - `camera_indexes`: OpenCV camera sources for all cameras (from `SO100_CAMERA_SOURCES`, `SO100_CAMERA_INDEXES`, or legacy `SO100_CAMERA_INDEX`).
+      - Example: `SO100_CAMERA_SOURCES="0,2,/dev/video4"`
     - `demo_fps`: control / streaming FPS (default 15).
     - `use_mock`: if `True` (or `USE_MOCK_ROBOT=true`), use a **mock robot** instead of real SO100.
+    - `use_real_cameras`: when `use_mock=True`, stream from real cameras if `USE_REAL_CAMERAS=true` (otherwise synthetic).
     - `mock_video_path`, `mock_static_image_path`: optional sources for mock camera frames.
     - Optional `search_policy_path`, `grasp_policy_path`.
   - `to_robot_config()` → creates `SO100FollowerConfig` with a `wrist` OpenCV camera.
@@ -230,7 +232,7 @@ All real engines currently raise `NotImplementedError` in `chat()`. This is deli
     ```
   - WebSocket endpoint: `ws://localhost:8000/ws`.
   - Static frontend served from:
-    - `http://localhost:8000/static/index.html`
+    - `http://localhost:8000/` (redirects to `http://localhost:8000/static/index.html`)
   - Uses:
     - `SO100DemoConfig` → `make_robot_interface(cfg)` → real or mock robot.
     - `LLMConfig.load("llm_config.json")` if present, or env vars.
@@ -326,22 +328,24 @@ python -m so100_vla_demo.demo_script
 
 This will:
 
-- Set `USE_MOCK_ROBOT=true` by default so that `make_robot_interface` returns a `MockRobotInterface`.
+- Default to real hardware when it looks like SO100 is connected, otherwise fall back to `USE_MOCK_ROBOT=true`.
+- You can force mock mode with `USE_MOCK_ROBOT=true`.
 - Start the FastAPI server on `http://localhost:8000`.
 - Serve the web UI at `http://localhost:8000/static/index.html`.
 
 In the browser you can:
 
 - Click **Connect** → **Start Stream** to see a synthetic scene with a table and colored objects.
-- Use quick buttons:
-  - **Find Red Cup**
-  - **Find Blue Block**
-  - **Find Green Ball**
 - Watch:
   - Live camera frames (mock or real).
   - Status messages (idle/searching/grasping/done).
   - Reasoning logs describing what the agent is “thinking”.
 - Chat with the LLM (stub by default) in the right panel.
+
+Chat commands:
+
+- `/stream on` / `/stream off`
+- `/help`
 
 Under the hood, in mock mode:
 
@@ -406,7 +410,7 @@ python -m so100_vla_demo.run_demo \
   --search-policy-path /path/to/search/pretrained_model \
   --grasp-policy-path /path/to/grasp/pretrained_model \
   --so100-port /dev/ttyUSB0 \
-  --camera-index 0
+  --camera-sources "0"
 ```
 
 The orchestrator will:

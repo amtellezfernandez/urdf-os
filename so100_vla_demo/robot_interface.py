@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import numpy as np
@@ -10,7 +12,39 @@ from lerobot.robots.so100_follower import SO100Follower, SO100FollowerConfig
 
 from .config import SO100DemoConfig
 from .mock_robot_interface import MockRobotInterface, make_mock_robot_interface
+
 logger = logging.getLogger(__name__)
+
+
+def _discover_serial_ports() -> list[str]:
+    """
+    Best-effort serial port discovery for SO100 (Linux-first).
+
+    Returns a prioritized list:
+    1) Stable symlinks under `/dev/serial/by-id/` (if present)
+    2) `/dev/ttyACM*` then `/dev/ttyUSB*`
+    """
+    ports: list[str] = []
+
+    by_id = Path("/dev/serial/by-id")
+    if by_id.is_dir():
+        for p in sorted(by_id.iterdir(), key=lambda x: x.name):
+            ports.append(str(p))
+
+    dev = Path("/dev")
+    for pattern in ("ttyACM*", "ttyUSB*"):
+        for p in sorted(dev.glob(pattern), key=lambda x: x.name):
+            ports.append(str(p))
+
+    # De-dupe while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for p in ports:
+        if p in seen:
+            continue
+        seen.add(p)
+        unique.append(p)
+    return unique
 
 
 @dataclass
@@ -20,21 +54,55 @@ class SO100RobotInterface:
 
     Responsibilities:
     - connect / disconnect robot
-    - fetch a single camera frame + joint state
+    - fetch all camera frames + joint state
     - send a joint-space command
     """
 
     config: SO100FollowerConfig
     robot: SO100Follower | None = None
+    _connected: bool = False
 
     def connect(self) -> None:
         if self.robot is not None and self.robot.is_connected:
             logger.warning("SO100RobotInterface.connect called but robot is already connected.")
             return
-        self.robot = SO100Follower(self.config)
-        logger.info("Connecting SO100Follower...")
-        self.robot.connect()
-        logger.info("SO100Follower connected.")
+        calibrate = os.environ.get("SO100_CALIBRATE", "false").lower() in {"1", "true", "yes"}
+
+        requested_port = (self.config.port or "").strip()
+        should_auto = requested_port.lower() in {"auto", "auto-detect", "autodetect", ""}
+        port_exists = bool(requested_port) and Path(requested_port).exists()
+
+        ports_to_try: list[str] = []
+        if not should_auto:
+            ports_to_try.append(requested_port)
+        if should_auto or not port_exists:
+            ports_to_try.extend(_discover_serial_ports())
+
+        last_err: Exception | None = None
+        for port in ports_to_try:
+            try:
+                self.config.port = port
+                self.robot = SO100Follower(self.config)
+                logger.info("Connecting SO100Follower on port=%s ...", port)
+                self.robot.connect(calibrate=calibrate)
+                self._connected = True
+                logger.info("SO100Follower connected on port=%s.", port)
+                return
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                logger.warning("Failed to connect SO100Follower on port=%s: %s", port, e)
+                try:
+                    if self.robot is not None and self.robot.is_connected:
+                        self.robot.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+                self.robot = None
+                self._connected = False
+
+        hint = (
+            "Set SO100_PORT=/dev/ttyACM0 (or your port), or set SO100_PORT=auto to auto-detect."
+        )
+        raise RuntimeError(f"Could not connect SO100Follower. Tried ports={ports_to_try}. {hint}") from last_err
 
     def disconnect(self) -> None:
         if self.robot is None:
@@ -45,11 +113,12 @@ class SO100RobotInterface:
             logger.error(f"Error while disconnecting robot: {e}")
         finally:
             self.robot = None
+            self._connected = False
 
-    def get_observation(self) -> Tuple[np.ndarray, Dict[str, float]]:
+    def get_observation(self) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
         """
         Returns:
-            image: last frame from the first configured camera, as HxWxC uint8 numpy array.
+            images: dict of camera_name -> HxWxC uint8 numpy array for all configured cameras.
             joints: dict of joint_name -> position (float).
         """
         if self.robot is None:
@@ -57,12 +126,14 @@ class SO100RobotInterface:
 
         obs: Dict[str, Any] = self.robot.get_observation()
 
-        # Extract first camera frame
-        cam_names = list(self.robot.cameras.keys())
-        if not cam_names:
-            raise RuntimeError("No cameras configured on SO100Follower.")
-        cam_key = cam_names[0]
-        image = obs[cam_key]
+        # Extract all camera frames
+        images: Dict[str, np.ndarray] = {}
+        for cam_name in self.robot.cameras.keys():
+            if cam_name in obs:
+                images[cam_name] = obs[cam_name]
+
+        if not images:
+            raise RuntimeError("No camera frames received from SO100Follower.")
 
         # Extract joint positions
         joints: Dict[str, float] = {}
@@ -71,7 +142,7 @@ class SO100RobotInterface:
             if key in obs:
                 joints[name] = float(obs[key])
 
-        return image, joints
+        return images, joints
 
     def send_joint_targets(self, joint_targets: Dict[str, float]) -> None:
         """
@@ -106,5 +177,3 @@ def make_robot_interface(cfg: SO100DemoConfig) -> SO100RobotInterface | MockRobo
         return make_mock_robot_interface(cfg)
     robot_cfg: SO100FollowerConfig = cfg.to_robot_config()
     return SO100RobotInterface(robot_cfg)
-
-

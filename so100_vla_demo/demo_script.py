@@ -8,21 +8,55 @@ Usage:
     python -m so100_vla_demo.demo_script
 
 This will:
-- default to mock robot mode (USE_MOCK_ROBOT=true) so you can run the demo
-  without SO100 hardware,
+- default to real hardware when it looks like SO100 is connected, otherwise
+  fall back to mock robot mode (USE_MOCK_ROBOT=true),
 - start the FastAPI/uvicorn server on http://localhost:8000,
 - print instructions for opening the web UI.
 """
 
 import os
 import webbrowser
+from pathlib import Path
 
 import uvicorn
 
 
+def _likely_so100_connected() -> bool:
+    """
+    Best-effort heuristic to decide whether to default to real hardware.
+
+    If this returns True and USE_MOCK_ROBOT is not explicitly set, we default to
+    real mode so the UI shows real camera streams on the robot machine.
+    """
+    port = (os.environ.get("SO100_PORT") or "").strip()
+    if port and port.lower() not in {"auto", "auto-detect", "autodetect"}:
+        try:
+            if Path(port).exists():
+                return True
+        except Exception:
+            pass
+
+    if Path("/dev/serial/by-id").is_dir():
+        try:
+            if any(Path("/dev/serial/by-id").iterdir()):
+                return True
+        except Exception:
+            pass
+
+    dev = Path("/dev")
+    for pattern in ("ttyACM*", "ttyUSB*"):
+        try:
+            if any(dev.glob(pattern)):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def main() -> None:
-    # Default to mock robot mode so judges / teammates can run the demo anywhere.
-    os.environ.setdefault("USE_MOCK_ROBOT", "true")
+    # Default to real mode on the robot machine, otherwise fall back to mock.
+    if "USE_MOCK_ROBOT" not in os.environ:
+        os.environ["USE_MOCK_ROBOT"] = "false" if _likely_so100_connected() else "true"
 
     host = os.environ.get("SO100_DEMO_HOST", "0.0.0.0")
     port_str = os.environ.get("SO100_DEMO_PORT", "8000")
@@ -37,6 +71,10 @@ def main() -> None:
         f"{os.environ.get('USE_MOCK_ROBOT')})."
     )
     print(f"[so100_vla_demo] Open {url} in your browser.")
+    if os.environ.get("USE_MOCK_ROBOT", "").lower() in {"1", "true", "yes"}:
+        print("[so100_vla_demo] Tip: to use real hardware, run with USE_MOCK_ROBOT=false.")
+    else:
+        print("[so100_vla_demo] Tip: set SO100_PORT and SO100_CAMERA_SOURCES if auto config is wrong.")
 
     # Try to open the browser on local machines (no-op on headless).
     try:
@@ -50,4 +88,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

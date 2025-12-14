@@ -39,15 +39,18 @@ from typing import Any, Dict, Literal, Set
 import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image
 
 from .config import SO100DemoConfig
 from .llm_config import LLMConfig
-from .llm_engine import BaseLLMEngine, StubEngine, make_llm_engine
+from .llm_engine import BaseLLMEngine, StubEngine, make_llm_engine, ROBOT_TOOLS
 from .mock_robot_interface import MockRobotInterface
 from .robot_interface import SO100RobotInterface, make_robot_interface
+from .search_skill import SearchPolicySkill
+from .grasp_skill import GraspPolicySkill
 from lerobot.utils.constants import HF_LEROBOT_CALIBRATION
 
 logger = logging.getLogger(__name__)
@@ -246,11 +249,9 @@ async def _pipe_subprocess_output(proc: asyncio.subprocess.Process, name: str) -
 
 async def camera_stream_loop() -> None:
     """
-    Background task: grab frames from SO100 and broadcast metadata.
+    Background task: grab frames from all cameras and broadcast.
 
-    For debugging we only send JSON with the frame shape and a small
-    JPEG thumbnail as base64-like bytes length. You can extend this to
-    send actual JPEG bytes or use a separate binary WebSocket channel.
+    Sends JSON with all camera images as base64 encoded JPEGs.
     """
     global streaming
     logger.info("Camera stream loop started.")
@@ -260,27 +261,73 @@ async def camera_stream_loop() -> None:
         # a connect() method. We lazily connect here for streaming.
         robot_interface.connect()
     except Exception as e:  # noqa: BLE001
-        logger.error("Failed to connect robot for streaming: %s", e)
+        logger.exception("Failed to connect robot/cameras for streaming: %s", e)
+        try:
+            await manager.broadcast_json(
+                {
+                    "type": "status",
+                    "phase": "error",
+                    "text": f"connect_failed: {e}",
+                }
+            )
+        except Exception:  # noqa: BLE001
+            pass
         streaming = False
         return
 
     try:
         while streaming:
-            frame, joints = robot_interface.get_observation()
-            h, w, c = frame.shape
+            try:
+                images, joints = robot_interface.get_observation()
+            except Exception as e:  # noqa: BLE001
+                logger.exception("Failed to get observation during streaming: %s", e)
+                try:
+                    await manager.broadcast_json(
+                        {
+                            "type": "status",
+                            "phase": "error",
+                            "text": f"observation_failed: {e}",
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                streaming = False
+                break
 
-            # Build a small thumbnail JPEG for debugging and send as base64
-            pil_img = Image.fromarray(frame)
-            pil_img.thumbnail((320, 240))
-            buf = BytesIO()
-            pil_img.save(buf, format="JPEG")
-            jpeg_bytes = buf.getvalue()
-            jpeg_b64 = base64.b64encode(jpeg_bytes).decode("utf-8")
+            # Build payload with all camera images
+            cameras_data = {}
+            for cam_name, frame in images.items():
+                try:
+                    if frame is None:
+                        continue
+                    if isinstance(frame, np.ndarray):
+                        if frame.ndim == 3 and frame.shape[0] in (1, 3, 4) and frame.shape[-1] not in (1, 3, 4):
+                            frame = np.transpose(frame, (1, 2, 0))
+                        if frame.dtype != np.uint8:
+                            frame = np.clip(frame, 0, 255).astype(np.uint8)
+
+                    # Build a small thumbnail JPEG and send as base64
+                    pil_img = Image.fromarray(frame)
+                    pil_img.thumbnail((320, 240))
+                    buf = BytesIO()
+                    pil_img.save(buf, format="JPEG")
+                    jpeg_bytes = buf.getvalue()
+                    jpeg_b64 = base64.b64encode(jpeg_bytes).decode("utf-8")
+
+                    shape = list(getattr(frame, "shape", []))
+                    if len(shape) == 2:
+                        shape.append(1)
+
+                    cameras_data[cam_name] = {
+                        "image_b64": jpeg_b64,
+                        "shape": shape,
+                    }
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Failed to encode camera %s frame: %s", cam_name, e)
 
             payload = {
                 "type": "frame",
-                "shape": [h, w, c],
-                "image_b64": jpeg_b64,
+                "cameras": cameras_data,
                 "joints": joints,
             }
             await manager.broadcast_json(payload)
@@ -288,6 +335,25 @@ async def camera_stream_loop() -> None:
             await asyncio.sleep(1.0 / demo_cfg.demo_fps)
     finally:
         logger.info("Camera stream loop stopped.")
+
+
+def _get_current_images_b64() -> Dict[str, str]:
+    """Get current camera images as base64 encoded JPEGs for VLM."""
+    if not robot_interface._connected:
+        return {}
+    try:
+        images, _ = robot_interface.get_observation()
+        result = {}
+        for cam_name, frame in images.items():
+            pil_img = Image.fromarray(frame)
+            pil_img.thumbnail((512, 512))  # Reasonable size for VLM
+            buf = BytesIO()
+            pil_img.save(buf, format="JPEG")
+            result[cam_name] = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return result
+    except Exception as e:
+        logger.warning("Could not get frames for VLM: %s", e)
+        return {}
 
 
 def _is_mock_robot() -> bool:
@@ -315,7 +381,7 @@ async def _mock_search_and_grasp(object_name: str) -> None:
     # Search phase: we simply run for a few steps and then "find" the object.
     for step in range(10):
         try:
-            frame, joints = robot_interface.get_observation()
+            images, joints = robot_interface.get_observation()
         except Exception as e:  # noqa: BLE001
             logger.error("Error getting observation during mock search: %s", e)
             await manager.broadcast_json(
@@ -366,6 +432,176 @@ async def _mock_search_and_grasp(object_name: str) -> None:
     await manager.broadcast_json({"type": "status", "phase": "done"})
 
 
+# Global skills (initialized lazily)
+search_skill: SearchPolicySkill | None = None
+grasp_skill: GraspPolicySkill | None = None
+
+
+def _init_skills() -> None:
+    """Initialize policy skills from config paths."""
+    global search_skill, grasp_skill
+    if demo_cfg.search_policy_path and search_skill is None:
+        from pathlib import Path
+        search_skill = SearchPolicySkill(policy_path=Path(demo_cfg.search_policy_path))
+        logger.info(f"Initialized search skill from {demo_cfg.search_policy_path}")
+    if demo_cfg.grasp_policy_path and grasp_skill is None:
+        from pathlib import Path
+        grasp_skill = GraspPolicySkill(policy_path=Path(demo_cfg.grasp_policy_path))
+        logger.info(f"Initialized grasp skill from {demo_cfg.grasp_policy_path}")
+
+
+async def _real_search(object_name: str) -> None:
+    """Run real search policy on hardware."""
+    global search_skill
+    _init_skills()
+
+    if search_skill is None:
+        await manager.broadcast_json({
+            "type": "status",
+            "phase": "error",
+            "text": "No search policy configured. Set SEARCH_POLICY_PATH environment variable.",
+        })
+        return
+
+    await manager.broadcast_json({"type": "status", "phase": "searching"})
+    await manager.broadcast_json({
+        "type": "reasoning",
+        "thought": f"Starting search for '{object_name}' using trained policy.",
+    })
+
+    try:
+        robot_interface.connect()
+        search_skill.load()
+
+        for step in range(50):  # max steps
+            images, joints = robot_interface.get_observation()
+            # Get first camera image for policy
+            first_cam = list(images.keys())[0]
+            action_dict = search_skill.step(images[first_cam], joints)
+
+            robot_interface.send_joint_targets({
+                name.replace(".pos", ""): val
+                for name, val in action_dict.items()
+                if name.endswith(".pos")
+            })
+
+            await manager.broadcast_json({
+                "type": "reasoning",
+                "thought": f"[search step {step}] Looking for {object_name}...",
+            })
+            await asyncio.sleep(0.1)
+
+        await manager.broadcast_json({"type": "status", "phase": "done"})
+    except Exception as e:
+        logger.error("Search error: %s", e)
+        await manager.broadcast_json({
+            "type": "status",
+            "phase": "error",
+            "text": str(e),
+        })
+
+
+async def _real_grasp(object_name: str = "object") -> None:
+    """Run real grasp policy on hardware."""
+    global grasp_skill
+    _init_skills()
+
+    if grasp_skill is None:
+        await manager.broadcast_json({
+            "type": "status",
+            "phase": "error",
+            "text": "No grasp policy configured. Set GRASP_POLICY_PATH environment variable.",
+        })
+        return
+
+    await manager.broadcast_json({"type": "status", "phase": "grasping"})
+    await manager.broadcast_json({
+        "type": "reasoning",
+        "thought": f"Starting grasp for '{object_name}' using trained policy.",
+    })
+
+    try:
+        grasp_skill.load()
+
+        for step in range(100):  # max steps
+            images, joints = robot_interface.get_observation()
+            # Get first camera image for policy
+            first_cam = list(images.keys())[0]
+            action_dict = grasp_skill.step(images[first_cam], joints)
+
+            robot_interface.send_joint_targets({
+                name.replace(".pos", ""): val
+                for name, val in action_dict.items()
+                if name.endswith(".pos")
+            })
+
+            await manager.broadcast_json({
+                "type": "reasoning",
+                "thought": f"[grasp step {step}] Executing grasp...",
+            })
+            await asyncio.sleep(0.1)
+
+        await manager.broadcast_json({
+            "type": "reasoning",
+            "thought": f"Grasp completed for '{object_name}'.",
+        })
+        await manager.broadcast_json({"type": "status", "phase": "done"})
+    except Exception as e:
+        logger.error("Grasp error: %s", e)
+        await manager.broadcast_json({
+            "type": "status",
+            "phase": "error",
+            "text": str(e),
+        })
+
+
+async def handle_tool_call(websocket: WebSocket, tool_call: Dict[str, Any]) -> None:
+    """Execute a tool call from the VLM."""
+    global behavior_task
+
+    name = tool_call.get("name")
+    args = tool_call.get("arguments", {})
+
+    await manager.broadcast_json({
+        "type": "reasoning",
+        "thought": f"VLM requested tool: {name} with args: {args}",
+    })
+
+    if name == "search_object":
+        object_name = args.get("object_description", "object")
+        if behavior_task is not None and not behavior_task.done():
+            behavior_task.cancel()
+
+        if _is_mock_robot():
+            behavior_task = asyncio.create_task(_mock_search_and_grasp(object_name))
+        else:
+            behavior_task = asyncio.create_task(_real_search(object_name))
+
+    elif name == "grasp_object":
+        object_name = args.get("object_description", "object")
+        if behavior_task is not None and not behavior_task.done():
+            behavior_task.cancel()
+
+        if _is_mock_robot():
+            # In mock mode, just do a quick grasp animation
+            await manager.broadcast_json({"type": "status", "phase": "grasping"})
+            for step in range(5):
+                await manager.broadcast_json({
+                    "type": "reasoning",
+                    "thought": f"[grasp step {step}] Grasping {object_name}...",
+                })
+                await asyncio.sleep(0.3)
+            await manager.broadcast_json({"type": "status", "phase": "done"})
+        else:
+            behavior_task = asyncio.create_task(_real_grasp(object_name))
+
+    elif name == "describe_scene":
+        await manager.broadcast_json({
+            "type": "reasoning",
+            "thought": "Scene description provided based on current camera views.",
+        })
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """
@@ -382,6 +618,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     await manager.connect(websocket)
     try:
+        await websocket.send_json(
+            {
+                "type": "status",
+                "phase": "idle",
+                "text": f"backend_ready (robot={'mock' if _is_mock_robot() else 'real'}, cameras={demo_cfg.get_camera_names()})",
+            }
+        )
         while True:
             msg = await websocket.receive_text()
             try:
@@ -394,19 +637,103 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             if mtype == "chat":
                 text = str(data.get("text", ""))
-                # For debugging: call the stub engine (or real LLM if configured)
+                normalized = text.strip().lower()
+
+                # Lightweight chat-command parsing so the UI can be chat-driven even
+                # when the VLM is stubbed (no API key).
+                if normalized in {
+                    "/help",
+                    "help",
+                    "?",
+                }:
+                    await websocket.send_json(
+                        {
+                            "type": "chat",
+                            "text": "Commands: '/stream on', '/stream off'. (Policies/skills wired later.)",
+                        }
+                    )
+                    continue
+
+                if normalized in {
+                    "/stream on",
+                    "/stream start",
+                    "/start_stream",
+                    "start stream",
+                    "start_stream",
+                }:
+                    if not streaming:
+                        streaming = True
+                        stream_task = asyncio.create_task(camera_stream_loop())
+                    await websocket.send_json(
+                        {"type": "status", "text": "streaming_started", "phase": "streaming"}
+                    )
+                    continue
+
+                if normalized in {
+                    "/stream off",
+                    "/stream stop",
+                    "/stop_stream",
+                    "stop stream",
+                    "stop_stream",
+                }:
+                    streaming = False
+                    if stream_task is not None:
+                        stream_task.cancel()
+                        stream_task = None
+                    await websocket.send_json(
+                        {"type": "status", "text": "streaming_stopped", "phase": "idle"}
+                    )
+                    continue
+
+                if normalized.startswith("/find ") or normalized.startswith("find "):
+                    object_name = text.split(" ", 1)[1].strip() if " " in text else "object"
+                    if behavior_task is not None and not behavior_task.done():
+                        behavior_task.cancel()
+                    if _is_mock_robot():
+                        behavior_task = asyncio.create_task(_mock_search_and_grasp(object_name))
+                        await websocket.send_json(
+                            {
+                                "type": "status",
+                                "text": f"search_and_grasp started for '{object_name}' (mock mode)",
+                                "phase": "searching",
+                            }
+                        )
+                    else:
+                        await websocket.send_json(
+                            {
+                                "type": "status",
+                                "text": "search/grasp via chat is not wired for real robot yet.",
+                                "phase": "idle",
+                            }
+                        )
+                    continue
+                # Get current camera images for VLM
+                images = _get_current_images_b64() if streaming else None
+
                 try:
                     reply = await llm_engine.chat(
                         messages=[{"role": "user", "content": text}],
-                        tools=None,
+                        tools=ROBOT_TOOLS,
+                        images=images,
                     )
-                    await websocket.send_json({"type": "chat", "text": reply.get("content", "")})
+
+                    # Handle any tool calls from the VLM
+                    tool_calls = reply.get("tool_calls", [])
+                    for tool_call in tool_calls:
+                        await handle_tool_call(websocket, tool_call)
+
+                    # Send text response
+                    content = reply.get("content", "")
+                    if content:
+                        await websocket.send_json({"type": "chat", "text": content})
+
                 except NotImplementedError:
                     # If a real engine is not implemented, fall back to StubEngine
                     stub = StubEngine()
                     reply = await stub.chat(
                         messages=[{"role": "user", "content": text}],
                         tools=None,
+                        images=images,
                     )
                     await websocket.send_json({"type": "chat", "text": reply.get("content", "")})
 
@@ -557,3 +884,8 @@ async def stop_teleop() -> Dict[str, Any]:
 static_dir = Path(__file__).with_name("static")
 if static_dir.is_dir():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+@app.get("/")
+async def root() -> RedirectResponse:
+    return RedirectResponse(url="/static/index.html")
