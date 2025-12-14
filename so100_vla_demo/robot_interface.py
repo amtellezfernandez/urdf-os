@@ -102,7 +102,15 @@ class SO100RobotInterface:
         hint = (
             "Set SO100_PORT=/dev/ttyACM0 (or your port), or set SO100_PORT=auto to auto-detect."
         )
-        raise RuntimeError(f"Could not connect SO100Follower. Tried ports={ports_to_try}. {hint}") from last_err
+        perm_hint = ""
+        if last_err is not None:
+            msg = str(last_err)
+            if isinstance(last_err, PermissionError) or "Permission denied" in msg or "permission denied" in msg:
+                perm_hint = (
+                    " If you're on Linux, you likely need serial permissions: "
+                    "run `sudo usermod -a -G dialout $USER` then log out/in."
+                )
+        raise RuntimeError(f"Could not connect SO100Follower. Tried ports={ports_to_try}. {hint}{perm_hint}") from last_err
 
     def disconnect(self) -> None:
         if self.robot is None:

@@ -102,6 +102,11 @@
 
 LeRobot works with Python 3.10+ and PyTorch 2.2+.
 
+## SO100 VLA Demo (Camera UI + MCP)
+
+For this repo’s SO100 demo scaffold (web UI camera streaming + MCP skills so an AI client can control the robot), see:
+- `so100_vla_demo/README.md`
+
 ### Environment Setup
 
 Create a virtual environment with Python 3.10 and activate it, e.g. with [`miniforge`](https://conda-forge.org/download/):

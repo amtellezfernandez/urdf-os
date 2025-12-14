@@ -177,3 +177,6 @@ outputs/
 *.urdf
 *.xml
 *.part
+
+# MCP (per-developer config)
+.mcp.json

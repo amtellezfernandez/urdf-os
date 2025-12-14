@@ -101,6 +101,9 @@ connect_robot("auto")  # or connect_robot("mock") for safe testing
 start_skill("smolvla", instruction="pick up the red cup")
 get_skill_status("skill_xxx")
 stop_skill("skill_xxx")  # interrupt if needed
+
+# Optional: pre-load checkpoint before a live demo (avoids first-call download/load delays)
+warmup_policy("smolvla")
 ```
 
 Tip: you can also keep policy/checkpoint settings in a shell env file:
@@ -116,7 +119,7 @@ Tip: you can also keep policy/checkpoint settings in a shell env file:
 
 ### 6. MCP Client Smoke Test (No Claude)
 
-This repo includes a small client that spawns the MCP server and calls tools:
+This repo includes a small client that calls the MCP tools (in-process, no sockets required):
 
 ```bash
 python -m so100_vla_demo.mcp_client_demo

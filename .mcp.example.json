@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "so100-vla": {
+      "command": "/home/USER/miniconda3/envs/lerobot/bin/python",
+      "args": ["-m", "so100_vla_demo.mcp_server"],
+      "cwd": "/home/USER/urdf-os",
+      "env": {
+        "PYTHONPATH": "/home/USER/urdf-os/src",
+        "SO100_CAMERA_SOURCES": "/dev/video4,/dev/video6",
+        "SO100_CAMERA_NAMES": "wrist,overhead",
+        "SO100_PORT": "auto",
+        "SMOLVLA_POLICY_ID": "Gurkinator/smolvla_so100_policy",
+        "SO100_POLICY_CAMERA_MAP": "{\"front\":\"overhead\",\"wrist\":\"wrist\"}"
+      }
+    }
+  }
+}

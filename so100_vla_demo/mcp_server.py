@@ -405,16 +405,11 @@ def connect_robot(port: str = "auto") -> Dict[str, Any]:
             robot_state.connected = True
             return {"status": "connected", "port": "mock"}
 
-        # Auto-detect port if needed
-        if port == "auto":
-            for try_port in ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1"]:
-                if os.path.exists(try_port):
-                    port = try_port
-                    break
-            else:
-                return {"status": "error", "error": "No robot port found. Connect USB cable or set SO100_PORT."}
-
-        os.environ["SO100_PORT"] = port
+        # Let SO100RobotInterface handle discovery when asked.
+        if port.strip().lower() in {"auto", "auto-detect", "autodetect"}:
+            os.environ["SO100_PORT"] = "auto"
+        else:
+            os.environ["SO100_PORT"] = port
         os.environ["USE_MOCK_ROBOT"] = "false"
 
         cfg = SO100DemoConfig()
@@ -422,11 +417,17 @@ def connect_robot(port: str = "auto") -> Dict[str, Any]:
         robot_state.robot_interface.connect()
         robot_state.connected = True
 
-        return {"status": "connected", "port": port}
+        return {"status": "connected", "port": os.environ.get("SO100_PORT", port)}
 
     except Exception as e:
         logger.error(f"Failed to connect robot: {e}")
-        return {"status": "error", "error": str(e)}
+        msg = str(e)
+        if "Permission denied" in msg or "permission denied" in msg:
+            msg = (
+                f"{msg} (Hint: on Linux, add your user to the 'dialout' group for /dev/ttyACM* access: "
+                "`sudo usermod -a -G dialout $USER` then log out/in.)"
+            )
+        return {"status": "error", "error": msg}
 
 
 @mcp.tool()
@@ -479,7 +480,7 @@ def get_robot_state() -> Dict[str, Any]:
 # =============================================================================
 
 @mcp.tool()
-def list_skills() -> List[Dict[str, str]]:
+def list_skills() -> List[Dict[str, Any]]:
     """
     List available VLA skills that can be executed.
 
@@ -593,9 +594,10 @@ def start_skill(
     Start executing a VLA skill.
 
     Args:
-        skill_name: Name of skill to execute ("grasp", "search", "home")
-        target_object: Description of target object (for grasp/search)
+        skill_name: Name of skill to execute ("smolvla", "xvla", "home")
+        target_object: Optional legacy object string (used only if instruction is empty)
         max_steps: Maximum steps to run before stopping
+        instruction: Natural-language instruction for the policy (e.g. "pick up the red cup")
 
     Returns:
         Skill execution ID and initial status. Use get_skill_status() to monitor.
@@ -737,6 +739,28 @@ def set_policy(policy_name: str, policy_id: str) -> Dict[str, Any]:
     return {"status": "ok", "policy_name": policy_name, "policy_id": policy_id, "env": env_key}
 
 
+@mcp.tool()
+def warmup_policy(policy_name: str) -> Dict[str, Any]:
+    """
+    Pre-load a policy checkpoint into memory.
+
+    Useful to do once before a live demo so `start_skill()` doesn't block on initial model download/load.
+    """
+    policy_name = policy_name.strip().lower()
+    runner = policy_runners.get(policy_name)
+    if runner is None:
+        env_key = f"{policy_name.upper()}_POLICY_ID"
+        return {
+            "status": "error",
+            "error": f"Policy '{policy_name}' is not configured. Set via set_policy() or {env_key}.",
+        }
+    try:
+        runner.ensure_loaded()
+        return {"status": "ok", "policy_name": policy_name, "policy_id": runner.policy_id}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "error": str(e), "policy_name": policy_name, "policy_id": runner.policy_id}
+
+
 # =============================================================================
 # Main Entry Point
 # =============================================================================
@@ -774,7 +798,8 @@ def main():
         mcp.run(transport="sse", host=args.host, port=args.port)
     else:
         # stdio transport for Claude Code integration
-        mcp.run(transport="stdio")
+        # IMPORTANT: suppress CLI banner for stdio clients (it would corrupt the protocol stream).
+        mcp.run(transport="stdio", show_banner=False)
 
 
 if __name__ == "__main__":
