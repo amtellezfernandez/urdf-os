@@ -439,20 +439,39 @@ class XVLAPolicy(PreTrainedPolicy):
         import safetensors.torch
 
         # step 1: load config
-        # TODO: jadechoghari, fix this
-        if config is None:
-            config = PreTrainedConfig.from_pretrained(
-                pretrained_name_or_path=pretrained_name_or_path,
-                force_download=force_download,
-                resume_download=resume_download,
-                proxies=proxies,
-                token=token,
-                cache_dir=cache_dir,
-                local_files_only=local_files_only,
-                revision=revision,
-                **kwargs,
-            )
+        # Always load pretrained config first, then override with any CLI-provided values
+        pretrained_config = PreTrainedConfig.from_pretrained(
+            pretrained_name_or_path=pretrained_name_or_path,
+            force_download=force_download,
+            resume_download=resume_download,
+            proxies=proxies,
+            token=token,
+            cache_dir=cache_dir,
+            local_files_only=local_files_only,
+            revision=revision,
+        )
 
+        if config is not None:
+            # Merge CLI config into pretrained config - CLI values override pretrained
+            # but only for non-empty fields
+            for field_name in config.__dataclass_fields__:
+                cli_value = getattr(config, field_name, None)
+                pretrained_value = getattr(pretrained_config, field_name, None)
+                # Only override if CLI value is non-empty/non-default
+                if field_name == "florence_config":
+                    # Special case: keep pretrained florence_config unless CLI provides a complete one
+                    if not cli_value or (isinstance(cli_value, dict) and "vision_config" not in cli_value):
+                        continue
+                elif field_name in ("input_features", "output_features"):
+                    # Keep CLI-provided features (needed for dataset compatibility)
+                    if cli_value:
+                        setattr(pretrained_config, field_name, cli_value)
+                    continue
+                elif cli_value is not None and cli_value != getattr(type(config)(), field_name, None):
+                    # CLI explicitly set this field, override pretrained
+                    setattr(pretrained_config, field_name, cli_value)
+
+        config = pretrained_config
         model_id = str(pretrained_name_or_path)
         instance = cls(config, **kwargs)
         # step 2: locate model.safetensors

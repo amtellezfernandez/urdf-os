@@ -230,8 +230,20 @@ class SO101Follower(Robot):
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        self.bus.disconnect(self.config.disable_torque_on_disconnect)
+        try:
+            self.bus.disconnect(self.config.disable_torque_on_disconnect)
+        except RuntimeError as e:
+            # Handle motor errors (e.g., overload) gracefully during disconnect
+            logger.warning(f"Motor error during disconnect (will close port anyway): {e}")
+            try:
+                self.bus.port_handler.closePort()
+            except Exception:
+                pass
+
         for cam in self.cameras.values():
-            cam.disconnect()
+            try:
+                cam.disconnect()
+            except Exception as e:
+                logger.warning(f"Error disconnecting camera: {e}")
 
         logger.info(f"{self} disconnected.")

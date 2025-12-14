@@ -33,7 +33,7 @@ echo "  Follower: $SO101_ROBOT_ID @ $SO101_PORT"
 echo "  Cameras:  front=/dev/video6, mount=/dev/video2"
 echo ""
 
-nohup python -m so101_vla_demo.demo_script > "$LOG_FILE" 2>&1 &
+nohup /home/shrek/miniconda3/envs/lerobot/bin/python -m so101_vla_demo.demo_script > "$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
 
 echo "✓ Demo started (PID: $(cat $PID_FILE))"

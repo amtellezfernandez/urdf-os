@@ -300,10 +300,18 @@
           <div id="eval-actions" style="margin-top: 1rem; padding-top: 0.5rem; border-top: 1px solid #333;">
             <div style="margin-bottom: 0.5rem;"><strong>Eval VLA</strong></div>
             <button id="start-eval-btn">Start Eval</button>
+            <button id="start-eval2-btn">Start Eval 2</button>
             <button id="stop-eval-btn" class="secondary" disabled>
               Stop Eval
             </button>
             <div id="eval-status" class="muted">Idle</div>
+          </div>
+          <div id="robot-actions" style="margin-top: 1rem; padding-top: 0.5rem; border-top: 1px solid #333;">
+            <div style="margin-bottom: 0.5rem;"><strong>Emergency</strong></div>
+            <button id="release-robot-btn" style="background: #8b0000; border-color: #a00;">
+              Release Robot
+            </button>
+            <div class="muted" style="font-size: 0.75rem; margin-top: 0.25rem;">Kills eval, disables torque</div>
           </div>
         </section>
       </div>
@@ -331,6 +339,7 @@
       const startTeleopBtn = document.getElementById("start-teleop-btn");
       const stopTeleopBtn = document.getElementById("stop-teleop-btn");
       const startEvalBtn = document.getElementById("start-eval-btn");
+      const startEval2Btn = document.getElementById("start-eval2-btn");
       const stopEvalBtn = document.getElementById("stop-eval-btn");
       const evalStatusEl = document.getElementById("eval-status");
       const teleopStatusEl = document.getElementById("teleop-status");
@@ -411,10 +420,12 @@
           const running = data.running;
           evalStatusEl.textContent = running ? "Running" : "Idle";
           startEvalBtn.disabled = running;
+          startEval2Btn.disabled = running;
           stopEvalBtn.disabled = !running;
         } catch {
           evalStatusEl.textContent = "Idle";
           startEvalBtn.disabled = false;
+          startEval2Btn.disabled = false;
           stopEvalBtn.disabled = true;
         }
       }
@@ -495,6 +506,22 @@
         await updateEvalStatus();
       }
 
+      async function startEval2() {
+        try {
+          const res = await fetch("/api/eval_vla/start2", { method: "POST" });
+          if (!res.ok) {
+            const err = await res.json();
+            appendReasoning(`Eval2 start failed: ${err.detail || res.status}`);
+          } else {
+            appendReasoning("Eval VLA 2 launched.");
+          }
+        } catch (err) {
+          console.error(err);
+          appendReasoning("Failed to start Eval VLA 2.");
+        }
+        await updateEvalStatus();
+      }
+
       async function stopEval() {
         try {
           await fetch("/api/eval_vla/stop", { method: "POST" });
@@ -502,6 +529,24 @@
         } catch (err) {
           console.error(err);
           appendReasoning("Failed to stop Eval VLA.");
+        }
+        await updateEvalStatus();
+      }
+
+      async function releaseRobot() {
+        appendReasoning("Releasing robot (killing processes, disabling torque)...");
+        try {
+          const res = await fetch("/api/robot/release", { method: "POST" });
+          const data = await res.json();
+          if (data.ok) {
+            appendReasoning("Robot released: " + data.actions.join(", "));
+            evalStatusEl.textContent = "Idle";
+          } else {
+            appendReasoning("Release failed: " + JSON.stringify(data));
+          }
+        } catch (err) {
+          console.error(err);
+          appendReasoning("Failed to release robot: " + err.message);
         }
         await updateEvalStatus();
       }
@@ -638,7 +683,9 @@
       startTeleopBtn.addEventListener("click", startTeleop);
       stopTeleopBtn.addEventListener("click", stopTeleop);
       startEvalBtn.addEventListener("click", startEval);
+      startEval2Btn.addEventListener("click", startEval2);
       stopEvalBtn.addEventListener("click", stopEval);
+      document.getElementById("release-robot-btn").addEventListener("click", releaseRobot);
 
       refreshDeviceConfig();
       refreshTeleopDefaults();

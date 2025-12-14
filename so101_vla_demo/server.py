@@ -1159,6 +1159,7 @@ async def start_eval_vla() -> Dict[str, Any]:
         repo_id = os.environ.get("EVAL_REPO_ID", repo_default)
         episode_time_s = os.environ.get("EVAL_EPISODE_TIME_S", "50")
         num_episodes = os.environ.get("EVAL_NUM_EPISODES", "5")
+        policy_type = os.environ.get("EVAL_POLICY_TYPE", "xvla")
         policy_path = os.environ.get("EVAL_POLICY_PATH", "Gowshigan/stackcupsv5")
         dataset_root_env = os.environ.get("EVAL_DATASET_ROOT")
         dataset_root_path: str | Path
@@ -1195,7 +1196,8 @@ async def start_eval_vla() -> Dict[str, Any]:
             f"--dataset.repo_id={repo_id}",
             f"--dataset.episode_time_s={episode_time_s}",
             f"--dataset.num_episodes={num_episodes}",
-            f"--policy.path={policy_path}",
+            f"--policy.type={policy_type}",
+            f"--policy.pretrained_path={policy_path}",
             f"--dataset.rename_map={rename_map}",
         ]
         if dataset_root_path:
@@ -1212,6 +1214,96 @@ async def start_eval_vla() -> Dict[str, Any]:
         asyncio.create_task(_pipe_subprocess_output(eval_process, "eval_vla"))
         logger.info("Started eval_vla pid=%s cmd=%s", eval_process.pid, cmd)
         # Do NOT restart streaming here; eval needs exclusive access to cameras.
+        return {"ok": True, "cmd": cmd, "pid": eval_process.pid}
+
+
+@app.post("/api/eval_vla/start2")
+async def start_eval_vla_policy2() -> Dict[str, Any]:
+    """
+    Launch Eval VLA with an alternate policy (default alexhegit/xvla_so101_lab1).
+    """
+    global eval_process, eval_process_cmd, eval_started_at
+    async with eval_lock:
+        if eval_process is not None and eval_process.returncode is None:
+            raise HTTPException(status_code=400, detail="Eval VLA already running.")
+
+        await manager.broadcast_json(
+            {"type": "status", "phase": "idle", "text": "streaming_stopped_for_eval"}
+        )
+        await _stop_teleop(disconnect_robot=True)
+        await _stop_streaming(disconnect_robot=True)
+
+        env_defaults = _get_env_teleop_defaults()
+        robot_port = env_defaults["robot_port"]
+        robot_id = env_defaults["robot_id"]
+        cameras_flag = env_defaults["cameras"] or _build_cameras_flag_from_env()
+        if not robot_port or not robot_id or not cameras_flag:
+            raise HTTPException(
+                status_code=400,
+                detail="Env config incomplete for eval (set SO101_PORT, SO101_ROBOT_ID, SO101_CAMERA_SOURCES/NAMES).",
+            )
+
+        task_name = os.environ.get("EVAL2_TASK", os.environ.get("EVAL_TASK", "Stack cups"))
+        repo_default = f"devsheroubi/eval_xvla_lab1_{time.strftime('%Y%m%d_%H%M%S')}"
+        repo_id = os.environ.get("EVAL2_REPO_ID", repo_default)
+        episode_time_s = os.environ.get("EVAL2_EPISODE_TIME_S", os.environ.get("EVAL_EPISODE_TIME_S", "50"))
+        num_episodes = os.environ.get("EVAL2_NUM_EPISODES", os.environ.get("EVAL_NUM_EPISODES", "5"))
+        policy_type = os.environ.get("EVAL2_POLICY_TYPE", os.environ.get("EVAL_POLICY_TYPE", "xvla"))
+        policy_path = os.environ.get("EVAL2_POLICY_PATH", "alexhegit/xvla_so101_lab1")
+        dataset_root_env = os.environ.get("EVAL2_DATASET_ROOT") or os.environ.get("EVAL_DATASET_ROOT")
+        dataset_root_path: str | Path
+        if dataset_root_env:
+            candidate = Path(dataset_root_env)
+            if candidate.exists():
+                suffix = time.strftime("%Y%m%d_%H%M%S")
+                candidate = candidate.parent / f"{candidate.name}_{suffix}"
+                await manager.broadcast_json({
+                    "type": "reasoning",
+                    "thought": f"[eval_vla2] dataset root exists, using new path: {candidate}",
+                })
+            dataset_root_path = candidate
+        else:
+            dataset_root_path = Path(tempfile.mkdtemp(prefix="so101_eval_"))
+            await manager.broadcast_json({
+                "type": "reasoning",
+                "thought": f"[eval_vla2] dataset root not set; created {dataset_root_path}",
+            })
+
+        rename_map = os.environ.get(
+            "EVAL2_RENAME_MAP",
+            os.environ.get(
+                "EVAL_RENAME_MAP",
+                '{"observation.images.mount": "observation.images.image", "observation.images.front": "observation.images.image2"}',
+            ),
+        )
+
+        cmd = [
+            "lerobot-record",
+            "--robot.type=so101_follower",
+            f"--robot.port={robot_port}",
+            f"--robot.id={robot_id}",
+            f"--robot.cameras={cameras_flag}",
+            f'--dataset.single_task="{task_name}"',
+            f"--dataset.repo_id={repo_id}",
+            f"--dataset.episode_time_s={episode_time_s}",
+            f"--dataset.num_episodes={num_episodes}",
+            f"--policy.type={policy_type}",
+            f"--policy.pretrained_path={policy_path}",
+            f"--dataset.rename_map={rename_map}",
+        ]
+        if dataset_root_path:
+            cmd.append(f"--dataset.root={dataset_root_path}")
+
+        await manager.broadcast_json({"type": "reasoning", "thought": "[eval_vla2] starting..."})
+        await manager.broadcast_json({"type": "reasoning", "thought": f"[eval_vla2] cmd: {' '.join(cmd)}"})
+
+        eval_process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=os.environ.copy()
+        )
+        eval_process_cmd = cmd
+        eval_started_at = time.time()
+        asyncio.create_task(_pipe_subprocess_output(eval_process, "eval_vla2"))
+        logger.info("Started eval_vla2 pid=%s cmd=%s", eval_process.pid, cmd)
         return {"ok": True, "cmd": cmd, "pid": eval_process.pid}
 
 
@@ -1233,6 +1325,77 @@ async def stop_eval_vla() -> Dict[str, Any]:
         eval_process = None
         await _start_streaming()
         return {"ok": True, "returncode": rc}
+
+
+@app.post("/api/robot/release")
+async def force_release_robot() -> Dict[str, Any]:
+    """
+    Force release the robot by:
+    1. Killing any lerobot processes
+    2. Disabling torque on motors
+    3. Closing serial port
+    Use this when eval crashes and robot is stuck.
+    """
+    global eval_process, eval_process_cmd, eval_started_at
+    import subprocess
+
+    results = {"ok": True, "actions": []}
+
+    # 1. Kill any lerobot-record processes
+    try:
+        subprocess.run(["pkill", "-9", "-f", "lerobot-record"], capture_output=True)
+        results["actions"].append("killed_lerobot_processes")
+    except Exception as e:
+        results["actions"].append(f"kill_failed: {e}")
+
+    # 2. Clear eval state
+    async with eval_lock:
+        if eval_process is not None:
+            try:
+                eval_process.kill()
+            except Exception:
+                pass
+        eval_process = None
+        eval_process_cmd.clear()
+        eval_started_at = None
+        results["actions"].append("cleared_eval_state")
+
+    # 3. Stop teleop if running
+    await _stop_teleop(disconnect_robot=False)
+    await _stop_streaming(disconnect_robot=False)
+    results["actions"].append("stopped_teleop_streaming")
+
+    # 4. Force disable torque on robot
+    env_defaults = _get_env_teleop_defaults()
+    robot_port = env_defaults.get("robot_port")
+    robot_id = env_defaults.get("robot_id")
+
+    if robot_port and robot_id:
+        try:
+            from lerobot.robots.so101_follower import SO101Follower, SO101FollowerConfig
+            config = SO101FollowerConfig(port=robot_port, id=robot_id)
+            temp_robot = SO101Follower(config)
+            temp_robot.connect()
+            temp_robot.bus.disable_torque()
+            temp_robot.bus.port_handler.closePort()
+            results["actions"].append("torque_disabled")
+        except Exception as e:
+            results["actions"].append(f"torque_disable_warning: {e}")
+            # Try to close port anyway
+            try:
+                import serial
+                ser = serial.Serial(robot_port)
+                ser.close()
+            except Exception:
+                pass
+
+    await manager.broadcast_json({
+        "type": "status",
+        "phase": "idle",
+        "text": "robot_released",
+    })
+
+    return results
 
 
 # Static files (frontend) -----------------------------------------------------
