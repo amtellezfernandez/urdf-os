@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>SO100 VLA Demo</title>
+    <title>SO101 VLA Demo</title>
     <style>
       body {
         margin: 0;
@@ -245,7 +245,7 @@
   </head>
   <body>
     <header>
-      <h1>SO100 VLA Demo</h1>
+      <h1>SO101 VLA Demo</h1>
       <div id="phase-indicator">Idle</div>
     </header>
 
@@ -288,28 +288,19 @@
         <section id="teleop-section">
           <h2>Teleop Control</h2>
           <div id="teleop-form">
-            <div>
-              <label for="teleop-id-select">Leader arm id</label>
-              <select id="teleop-id-select"></select>
-            </div>
-            <div>
-              <label for="teleop-port-input">Leader port</label>
-              <input id="teleop-port-input" placeholder="/dev/ttyACM1" />
-            </div>
-            <div>
-              <label for="robot-id-select">Follower arm id</label>
-              <select id="robot-id-select"></select>
-            </div>
-            <div>
-              <label for="robot-port-input">Follower port</label>
-              <input id="robot-port-input" placeholder="/dev/ttyACM0" />
+            <div id="teleop-config-summary" style="padding: 0.75rem; background: #222; border-radius: 4px; margin: 0.75rem; font-size: 0.85rem;">
+              <div style="margin-bottom: 0.5rem;"><strong>Configuration (from env):</strong></div>
+              <div style="color: #9aa0a6; line-height: 1.6;">
+                <div>Leader: <span id="teleop-leader-summary" style="color: #f5f5f5;">--</span></div>
+                <div>Follower: <span id="teleop-follower-summary" style="color: #f5f5f5;">--</span></div>
+                <div>Cameras: <span id="teleop-cameras-summary" style="color: #f5f5f5;">--</span></div>
+              </div>
             </div>
           </div>
           <div id="teleop-actions">
-            <button id="save-ports-btn">Save Ports</button>
             <button id="start-teleop-btn">Start Teleop</button>
             <button id="stop-teleop-btn" class="secondary" disabled>
-              Stop
+              Stop Teleop
             </button>
             <div id="teleop-status" class="muted">Idle</div>
           </div>
@@ -324,7 +315,7 @@
     </main>
 
     <footer>
-      SO100 VLA Demo (VLM stubbed by default). Use <code>USE_MOCK_ROBOT=true</code> for mock mode.
+      SO101 VLA Demo (VLM stubbed by default). Use <code>USE_MOCK_ROBOT=true</code> for mock mode.
     </footer>
 
     <script>
@@ -346,18 +337,22 @@
       const reasoningLog = document.getElementById("reasoning-log");
       const statusText = document.getElementById("status-text");
       const phaseIndicator = document.getElementById("phase-indicator");
-      const teleopIdSelect = document.getElementById("teleop-id-select");
-      const teleopPortInput = document.getElementById("teleop-port-input");
-      const robotIdSelect = document.getElementById("robot-id-select");
-      const robotPortInput = document.getElementById("robot-port-input");
       const startTeleopBtn = document.getElementById("start-teleop-btn");
       const stopTeleopBtn = document.getElementById("stop-teleop-btn");
-      const savePortsBtn = document.getElementById("save-ports-btn");
       const devicesTableWrapper = document.getElementById(
         "devices-table-wrapper"
       );
       const calibRootEl = document.getElementById("calib-root");
       const teleopStatusEl = document.getElementById("teleop-status");
+      const teleopLeaderSummary = document.getElementById(
+        "teleop-leader-summary"
+      );
+      const teleopFollowerSummary = document.getElementById(
+        "teleop-follower-summary"
+      );
+      const teleopCamerasSummary = document.getElementById(
+        "teleop-cameras-summary"
+      );
 
       function setPhase(phase) {
         phaseIndicator.textContent = phase || "Idle";
@@ -438,36 +433,6 @@
         devicesTableWrapper.appendChild(table);
       }
 
-      function fillDeviceSelects() {
-        const teleops = deviceConfig.devices.filter((d) => d.role === "teleop");
-        const robots = deviceConfig.devices.filter((d) => d.role === "robot");
-
-        teleopIdSelect.innerHTML = "";
-        robotIdSelect.innerHTML = "";
-
-        teleops.forEach((d) => {
-          const opt = document.createElement("option");
-          opt.value = d.id;
-          opt.textContent = `${d.id} (${d.type})`;
-          teleopIdSelect.appendChild(opt);
-        });
-
-        robots.forEach((d) => {
-          const opt = document.createElement("option");
-          opt.value = d.id;
-          opt.textContent = `${d.id} (${d.type})`;
-          robotIdSelect.appendChild(opt);
-        });
-
-        if (teleops.length) {
-          teleopIdSelect.value = teleops[0].id;
-          teleopPortInput.value = teleops[0].port || "";
-        }
-        if (robots.length) {
-          robotIdSelect.value = robots[0].id;
-          robotPortInput.value = robots[0].port || "";
-        }
-      }
 
       async function refreshDeviceConfig() {
         try {
@@ -476,57 +441,12 @@
           deviceConfig = data;
           calibRootEl.textContent = deviceConfig.calibration_root || "";
           renderDevicesTable();
-          fillDeviceSelects();
         } catch (err) {
           console.error(err);
           appendReasoning("Could not load device config from backend.");
         }
       }
 
-      function applyPortForSelection(role) {
-        const targetId =
-          role === "teleop" ? teleopIdSelect.value : robotIdSelect.value;
-        const match = deviceConfig.devices.find(
-          (d) => d.role === role && d.id === targetId
-        );
-        if (role === "teleop") {
-          teleopPortInput.value = match?.port || "";
-        } else {
-          robotPortInput.value = match?.port || "";
-        }
-      }
-
-      async function savePorts() {
-        const payloads = [
-          {
-            role: "teleop",
-            type: "so100_leader",
-            id: teleopIdSelect.value,
-            port: teleopPortInput.value.trim(),
-          },
-          {
-            role: "robot",
-            type: "so100_follower",
-            id: robotIdSelect.value,
-            port: robotPortInput.value.trim(),
-          },
-        ];
-        try {
-          for (const body of payloads) {
-            if (!body.id || !body.port) continue;
-            await fetch("/api/device-config", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            });
-          }
-          appendReasoning("Saved ports to device store.");
-          await refreshDeviceConfig();
-        } catch (err) {
-          console.error(err);
-          appendReasoning("Failed to save ports.");
-        }
-      }
 
       async function updateTeleopStatus() {
         try {
@@ -543,24 +463,34 @@
         }
       }
 
-      async function startTeleop() {
-        const teleopId = teleopIdSelect.value;
-        const robotId = robotIdSelect.value;
-        const teleopPort = teleopPortInput.value.trim();
-        const robotPort = robotPortInput.value.trim();
-        if (!teleopId || !robotId) {
-          appendReasoning("Select both leader and follower ids first.");
-          return;
+      async function refreshTeleopDefaults() {
+        try {
+          const res = await fetch("/api/teleop/defaults");
+          const data = await res.json();
+          const leader = `${data.teleop_id || "(unset)"} @ ${
+            data.teleop_port || "(unset)"
+          }`;
+          const follower = `${data.robot_id || "(unset)"} @ ${
+            data.robot_port || "(unset)"
+          }`;
+          teleopLeaderSummary.textContent = leader;
+          teleopFollowerSummary.textContent = follower;
+          teleopCamerasSummary.textContent = data.cameras || "(none)";
+        } catch (err) {
+          console.error(err);
+          teleopLeaderSummary.textContent = "(error)";
+          teleopFollowerSummary.textContent = "(error)";
+          teleopCamerasSummary.textContent = "(error)";
         }
+      }
+
+      async function startTeleop() {
         try {
           const res = await fetch("/api/teleop/start", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              teleop_id: teleopId,
-              robot_id: robotId,
-              teleop_port: teleopPort || null,
-              robot_port: robotPort || null,
+              display_data: true,
             }),
           });
           if (!res.ok) {
@@ -724,15 +654,13 @@
         }
       });
 
-      teleopIdSelect.addEventListener("change", () => applyPortForSelection("teleop"));
-      robotIdSelect.addEventListener("change", () => applyPortForSelection("robot"));
-      savePortsBtn.addEventListener("click", savePorts);
       startTeleopBtn.addEventListener("click", startTeleop);
       stopTeleopBtn.addEventListener("click", stopTeleop);
 
       refreshDeviceConfig();
+      refreshTeleopDefaults();
       updateTeleopStatus();
       setInterval(updateTeleopStatus, 4000);
     </script>
   </body>
-  </html>
+</html>

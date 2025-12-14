@@ -1,4 +1,4 @@
-# SO100 VLA Demo Scaffold
+# SO101 VLA Demo Scaffold
 
 ## Complete Setup Guide: Robot Calibration → Camera Streaming → AI Control
 
@@ -6,7 +6,7 @@ This guide walks you through the complete setup process from a fresh install to 
 
 ### Prerequisites Checklist
 
-- [ ] SO100 robot arm connected via USB
+- [ ] SO101 robot arm connected via USB
 - [ ] USB camera(s) connected
 - [ ] Conda environment `lerobot` created and activated
 - [ ] User added to `dialout` and `video` groups
@@ -40,7 +40,7 @@ ls -la /dev/ttyACM* /dev/ttyUSB*
 ```bash
 # Find cameras
 lerobot-find-cameras opencv
-# Example output: Camera found at index 0, 2
+# Example output: Camera found at index 0, 4
 
 # Find serial port
 ls /dev/ttyACM* /dev/ttyUSB* /dev/serial/by-id/
@@ -51,7 +51,7 @@ ls /dev/ttyACM* /dev/ttyUSB* /dev/serial/by-id/
 ```bash
 python -c "
 import cv2
-for i in [0, 2, 4]:
+for i in [0, 4]:
     cap = cv2.VideoCapture(i)
     if cap.isOpened():
         ret, frame = cap.read()
@@ -72,10 +72,10 @@ The robot **must be calibrated** before it can read joint positions or be contro
 **Run calibration:**
 ```bash
 # Use sg dialout if you haven't logged out/in yet
-sg dialout -c "lerobot-calibrate --robot.type=so100_follower --robot.port=/dev/ttyACM0 --robot.id=my_so100"
+sg dialout -c "lerobot-calibrate --robot.type=so100_follower --robot.port=/dev/ttyACM0 --robot.id=my_so101"
 
 # Or if you've logged out/in:
-lerobot-calibrate --robot.type=so100_follower --robot.port=/dev/ttyACM0 --robot.id=my_so100
+lerobot-calibrate --robot.type=so100_follower --robot.port=/dev/ttyACM0 --robot.id=my_so101
 ```
 
 **During calibration:**
@@ -95,7 +95,7 @@ This happens when a joint is positioned at exactly 2048 (the midpoint). **Soluti
 **Verify calibration:**
 ```bash
 ls ~/.cache/huggingface/lerobot/calibration/robots/so100_follower/
-# Should show: my_so100.json (or your robot ID)
+# Should show: my_so101.json (or your robot ID)
 ```
 
 ---
@@ -108,13 +108,13 @@ The MCP server exposes robot control as tools that Claude/AI can call.
 ```bash
 # Set environment variables
 export PYTHONPATH=/path/to/urdf-os/src
-export SO100_PORT=/dev/ttyACM0       # or "auto" for auto-detect
-export SO100_ROBOT_ID=my_so100       # MUST match calibration ID!
-export SO100_CAMERA_SOURCES=0        # camera index (use what you found in Step 2)
-export SO100_CAMERA_NAMES=wrist      # name for the camera
+export SO101_PORT=/dev/ttyACM0       # or "auto" for auto-detect
+export SO101_ROBOT_ID=my_so101       # MUST match calibration ID!
+export SO101_CAMERA_SOURCES=/dev/video0,/dev/video4  # 0=front, 4=mount
+export SO101_CAMERA_NAMES=front,mount                # names for cameras
 
 # Use sg dialout if permissions not yet active
-sg dialout -c "python -m so100_vla_demo.mcp_server --transport sse --port 8765"
+sg dialout -c "python -m so101_vla_demo.mcp_server --transport sse --port 8765"
 
 # Server will be available at: http://localhost:8765/sse
 ```
@@ -209,7 +209,7 @@ sg dialout -c "your-command-here"
 
 **"has no calibration registered" error:**
 - Run calibration (Step 3) before connecting the robot
-- **Set `SO100_ROBOT_ID` environment variable** to match your calibration ID (e.g., `my_so100`)
+- **Set `SO101_ROBOT_ID` environment variable** to match your calibration ID (e.g., `my_so101`)
 - Check calibration file exists: `ls ~/.cache/huggingface/lerobot/calibration/robots/so100_follower/`
 
 **"Magnitude 2048 exceeds 2047" during calibration:**
@@ -227,22 +227,22 @@ sg dialout -c "your-command-here"
 
 The web UI provides a browser-based interface with live camera streaming.
 
-**IMPORTANT:** You must set `SO100_ROBOT_ID` to match your calibration ID!
+**IMPORTANT:** You must set `SO101_ROBOT_ID` to match your calibration ID!
 
 **Start the Web UI server:**
 ```bash
 # Set all required environment variables
 export PYTHONPATH=/path/to/urdf-os/src
-export SO100_PORT=/dev/ttyACM0
-export SO100_ROBOT_ID=my_so100          # MUST match calibration ID from Step 3!
-export SO100_CAMERA_SOURCES=0            # camera index
-export SO100_CAMERA_NAMES=wrist
+export SO101_PORT=/dev/ttyACM0
+export SO101_ROBOT_ID=my_so101          # MUST match calibration ID from Step 3!
+export SO101_CAMERA_SOURCES=0            # camera index
+export SO101_CAMERA_NAMES=wrist
 
 # Start server (use sg dialout if needed)
-sg dialout -c "python -m so100_vla_demo.demo_script"
+sg dialout -c "python -m so101_vla_demo.demo_script"
 
 # Or if permissions are already set:
-python -m so100_vla_demo.demo_script
+python -m so101_vla_demo.demo_script
 ```
 
 **Open in browser:** http://localhost:8000/static/index.html
@@ -256,9 +256,9 @@ python -m so100_vla_demo.demo_script
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| "has no calibration registered" | `SO100_ROBOT_ID` not set or wrong | Set `SO100_ROBOT_ID=my_so100` (must match calibration) |
+| "has no calibration registered" | `SO101_ROBOT_ID` not set or wrong | Set `SO101_ROBOT_ID=my_so101` (must match calibration) |
 | "address already in use" | Port 8000 occupied | Run `fuser -k 8000/tcp` then restart |
-| Camera not streaming | Wrong camera index | Check `SO100_CAMERA_SOURCES` matches your camera |
+| Camera not streaming | Wrong camera index | Check `SO101_CAMERA_SOURCES` matches your camera |
 | "Permission denied" | Not in dialout group | Use `sg dialout -c "..."` or logout/login |
 
 **Finding the correct camera devices:**
@@ -283,20 +283,20 @@ done
 ```
 
 Typically:
-- `/dev/video0` or `/dev/video2` = Computer webcam (lower resolution like 640x360)
-- `/dev/video4`, `/dev/video6` = Robot cameras (usually 640x480)
+- `/dev/video0` = Front camera (640x480)
+- `/dev/video4` = Mount camera (640x480)
 
 **Full working example with robot cameras:**
 ```bash
 sg dialout -c "PYTHONPATH=/home/$USER/urdf-os/src \
-  SO100_PORT=/dev/ttyACM0 \
-  SO100_ROBOT_ID=my_so100 \
-  SO100_CAMERA_SOURCES=4,6 \
-  SO100_CAMERA_NAMES=wrist,overhead \
-  python -m so100_vla_demo.demo_script"
+  SO101_PORT=/dev/ttyACM0 \
+  SO101_ROBOT_ID=my_so101 \
+  SO101_CAMERA_SOURCES=/dev/video0,/dev/video4 \
+  SO101_CAMERA_NAMES=front,mount \
+  python -m so101_vla_demo.demo_script"
 ```
 
-**Note:** Replace `4,6` with the actual camera indices you found that correspond to your robot cameras.
+**Note:** For this setup, use `/dev/video0,/dev/video4` where video0=front camera and video4=mount camera.
 
 ---
 
@@ -329,13 +329,13 @@ sudo usermod -a -G dialout,video $USER
 
 If you can’t log out (or want a quick temporary workaround), you can also run just the MCP server with sudo:
 ```bash
-sudo -E /home/USER/miniconda3/envs/lerobot/bin/python -m so100_vla_demo.mcp_server
+sudo -E /home/USER/miniconda3/envs/lerobot/bin/python -m so101_vla_demo.mcp_server
 ```
 
 Recommended: use a stable port path if available:
 ```bash
 ls -la /dev/serial/by-id
-export SO100_PORT=/dev/serial/by-id/<your-so100-device>
+export SO101_PORT=/dev/serial/by-id/<your-so101-device>
 ```
 
 ### 3. Run the Web UI (Camera Streaming)
@@ -347,9 +347,9 @@ lerobot-find-cameras opencv
 # Start server (adjust camera sources based on above)
 USE_MOCK_ROBOT=true \
 USE_REAL_CAMERAS=true \
-SO100_CAMERA_SOURCES="/dev/video4,/dev/video6" \
-SO100_CAMERA_NAMES="wrist,overhead" \
-python -m so100_vla_demo.demo_script
+SO101_CAMERA_SOURCES="/dev/video0,/dev/video4" \
+SO101_CAMERA_NAMES="front,mount" \
+python -m so101_vla_demo.demo_script
 ```
 
 Open http://localhost:8000/static/index.html → Click **Connect** to see cameras.
@@ -357,10 +357,10 @@ Open http://localhost:8000/static/index.html → Click **Connect** to see camera
 To use the **real robot arm** (not mock):
 ```bash
 USE_MOCK_ROBOT=false \
-SO100_PORT=/dev/ttyACM0 \
-SO100_CAMERA_SOURCES="/dev/video4,/dev/video6" \
-SO100_CAMERA_NAMES="wrist,overhead" \
-python -m so100_vla_demo.demo_script
+SO101_PORT=/dev/ttyACM0 \
+SO101_CAMERA_SOURCES="/dev/video0,/dev/video4" \
+SO101_CAMERA_NAMES="front,mount" \
+python -m so101_vla_demo.demo_script
 ```
 
 ### 4. Run MCP Server (AI Controls Robot via Claude Code)
@@ -372,7 +372,7 @@ We ship a template: copy `.mcp.example.json` → `.mcp.json`, then update paths 
 # Find your values:
 which python                    # → e.g. /home/USER/miniconda3/envs/lerobot/bin/python
 pwd                             # → e.g. /home/USER/urdf-os
-lerobot-find-cameras opencv     # → e.g. /dev/video4, /dev/video6
+lerobot-find-cameras opencv     # → e.g. 0, 4 (front=0, mount=4)
 ls /dev/ttyACM* /dev/ttyUSB*    # → e.g. /dev/ttyACM0
 ```
 
@@ -380,16 +380,16 @@ Then edit `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "so100-vla": {
+    "so101-vla": {
       "command": "/home/USER/miniconda3/envs/lerobot/bin/python",
-      "args": ["-m", "so100_vla_demo.mcp_server"],
+      "args": ["-m", "so101_vla_demo.mcp_server"],
       "cwd": "/home/USER/urdf-os",
       "env": {
         "PYTHONPATH": "/home/USER/urdf-os/src",
-        "SO100_CAMERA_SOURCES": "/dev/video4,/dev/video6",
-        "SO100_CAMERA_NAMES": "wrist,overhead",
-        "SO100_PORT": "auto",
-        "SMOLVLA_POLICY_ID": "Gurkinator/smolvla_so100_policy"
+        "SO101_CAMERA_SOURCES": "/dev/video0,/dev/video4",
+        "SO101_CAMERA_NAMES": "front,mount",
+        "SO101_PORT": "auto",
+        "SMOLVLA_POLICY_ID": "Gurkinator/smolvla_so101_policy"
       }
     }
   }
@@ -424,7 +424,7 @@ warmup_policy("smolvla")
 ```
 
 Tip: you can also keep policy/checkpoint settings in a shell env file:
-- `so100_vla_demo/checkpoints.example.env` (copy and edit)
+- `so101_vla_demo/checkpoints.example.env` (copy and edit)
 
 ### 5. Demo Flow (AI Agent Controlling Robot)
 
@@ -439,13 +439,13 @@ Tip: you can also keep policy/checkpoint settings in a shell env file:
 This repo includes a small client that calls the MCP tools (in-process, no sockets required):
 
 ```bash
-python -m so100_vla_demo.mcp_client_demo
-python -m so100_vla_demo.mcp_client_demo --policy Gurkinator/smolvla_so100_policy --steps 2
+python -m so101_vla_demo.mcp_client_demo
+python -m so101_vla_demo.mcp_client_demo --policy Gurkinator/smolvla_so101_policy --steps 2
 ```
 
 ---
 
-This folder contains a **self‑contained scaffold** for a LeRobot hackathon demo with the SO100 arm:
+This folder contains a **self‑contained scaffold** for a LeRobot hackathon demo with the SO101 arm:
 
 - Use LeRobot’s `SO100Follower` to talk directly to the arm (no DDS/ROS).
 - Record your own demos (`lerobot-record`) for **search** and **grasp**.
@@ -468,7 +468,7 @@ The code here is deliberately lightweight and model‑agnostic: you bring your p
    - `grasp_object` → run a visuomotor policy to *manipulate* once object is visible.
 3. **Let the LLM plan** in terms of skills, not raw joint angles.
 4. **Avoid unnecessary infrastructure**:
-   - No MCP runtime, no DDS, no ROS required for SO100.
+   - No MCP runtime, no DDS, no ROS required for SO101.
    - Just LeRobot, your policies, and a small VLM/LLM client.
 
 ### Why a learned `search_object()` skill
@@ -491,9 +491,9 @@ Once search succeeds, a second policy (SmolVLA/XVLA/diffusion) takes over to gra
 
 ### Why not use existing MCP / DDS stack
 
-For the LeRobot hackathon with SO100:
+For the LeRobot hackathon with SO101:
 
-- LeRobot already gives a clean SO100 robot API and camera integration.
+- LeRobot already gives a clean SO101 robot API and camera integration.
 - DDS and your Unitree sim stack aren’t needed.
 - MCP adds complexity that doesn’t buy much for a focused demo.
 
@@ -510,32 +510,32 @@ So we treat:
 ### Core Config & Robot Wrapper
 
 - `config.py`
-  - `SO100DemoConfig`:
-    - `port`: SO100 serial port (`SO100_PORT` env or `/dev/ttyUSB0`).
-    - `camera_indexes`: OpenCV camera sources for all cameras (from `SO100_CAMERA_SOURCES`, `SO100_CAMERA_INDEXES`, or legacy `SO100_CAMERA_INDEX`).
-      - Example: `SO100_CAMERA_SOURCES="0,2,/dev/video4"`
+  - `SO101DemoConfig`:
+    - `port`: SO101 serial port (`SO101_PORT` env or `/dev/ttyUSB0`).
+    - `camera_indexes`: OpenCV camera sources for all cameras (from `SO101_CAMERA_SOURCES`, `SO101_CAMERA_INDEXES`, or legacy `SO101_CAMERA_INDEX`).
+      - Example: `SO101_CAMERA_SOURCES="0,2,/dev/video4"`
     - `demo_fps`: control / streaming FPS (default 15).
-    - `use_mock`: if `True` (or `USE_MOCK_ROBOT=true`), use a **mock robot** instead of real SO100.
+    - `use_mock`: if `True` (or `USE_MOCK_ROBOT=true`), use a **mock robot** instead of real SO101.
     - `use_real_cameras`: when `use_mock=True`, stream from real cameras if `USE_REAL_CAMERAS=true` (otherwise synthetic).
     - `mock_video_path`, `mock_static_image_path`: optional sources for mock camera frames.
     - Optional `search_policy_path`, `grasp_policy_path`.
   - `to_robot_config()` → creates `SO100FollowerConfig` with a `wrist` OpenCV camera.
 
 - `robot_interface.py`
-  - `SO100RobotInterface`:
+  - `SO101RobotInterface`:
     - `connect()` / `disconnect()` around `SO100Follower`.
     - `get_observation() -> (image, joints_dict)`:
       - image: first camera frame (HxWxC, `np.uint8`).
       - joints: `{joint_name: position_float}`.
     - `send_joint_targets(joint_targets: dict[str, float])`:
       - wraps into `{f"{name}.pos": value}` and calls `robot.send_action(...)`.
-  - `make_robot_interface(cfg: SO100DemoConfig)`:
-    - Returns a real `SO100RobotInterface` when `cfg.use_mock` is `False`.
+  - `make_robot_interface(cfg: SO101DemoConfig)`:
+    - Returns a real `SO101RobotInterface` when `cfg.use_mock` is `False`.
     - Returns a `MockRobotInterface` when `cfg.use_mock` is `True`.
 
 - `mock_robot_interface.py`
   - `MockRobotInterface`:
-    - Implements the same API as `SO100RobotInterface` (`connect`, `disconnect`, `get_observation`, `send_joint_targets`).
+    - Implements the same API as `SO101RobotInterface` (`connect`, `disconnect`, `get_observation`, `send_joint_targets`).
     - Can return:
       - synthetic scenes with a table and colored objects (red cup, blue block, green ball),
       - frames from a video file (`MOCK_VIDEO_PATH`),
@@ -580,8 +580,8 @@ So we treat:
 - `demo_orchestrator.py`
   - `SO100DemoOrchestrator`:
     - Holds:
-      - `cfg: SO100DemoConfig`
-      - `robot: SO100RobotInterface`
+      - `cfg: SO101DemoConfig`
+      - `robot: SO101RobotInterface`
       - `search_skill: SearchPolicySkill`
       - `grasp_skill: GraspPolicySkill`
       - `detect_fn(frame, object_name) -> bool`
@@ -598,11 +598,11 @@ So we treat:
 - `run_demo.py`
   - CLI usage:
     ```bash
-    python -m so100_vla_demo.run_demo \
+    python -m so101_vla_demo.run_demo \
       --object-name "tennis ball" \
       --search-policy-path /path/to/search_pretrained_model \
       --grasp-policy-path /path/to/grasp_pretrained_model \
-      --so100-port /dev/ttyUSB0 \
+      --so101-port /dev/ttyUSB0 \
       --camera-index 0
     ```
   - If `--search-policy-path` is omitted:
@@ -673,13 +673,13 @@ All real engines currently raise `NotImplementedError` in `chat()`. This is deli
 - `server.py`
   - Start it from the LeRobot repo root:
     ```bash
-    uvicorn so100_vla_demo.server:app --host 0.0.0.0 --port 8000
+    uvicorn so101_vla_demo.server:app --host 0.0.0.0 --port 8000
     ```
   - WebSocket endpoint: `ws://localhost:8000/ws`.
   - Static frontend served from:
     - `http://localhost:8000/` (redirects to `http://localhost:8000/static/index.html`)
   - Uses:
-    - `SO100DemoConfig` → `make_robot_interface(cfg)` → real or mock robot.
+    - `SO101DemoConfig` → `make_robot_interface(cfg)` → real or mock robot.
     - `LLMConfig.load("llm_config.json")` if present, or env vars.
     - `make_llm_engine(...)` for LLM (stub fallback).
 
@@ -758,16 +758,16 @@ Minimum expected files:
 
 #### Option A: Use environment variables (simplest)
 
-Example (public SmolVLA checkpoint for SO100):
+Example (public SmolVLA checkpoint for SO101):
 
 ```bash
-export SMOLVLA_POLICY_ID="Gurkinator/smolvla_so100_policy"
+export SMOLVLA_POLICY_ID="Gurkinator/smolvla_so101_policy"
 ```
 
 If your policy expects camera names like `front` but your robot uses `overhead`, set:
 
 ```bash
-export SO100_POLICY_CAMERA_MAP='{"front":"overhead","wrist":"wrist"}'
+export SO101_POLICY_CAMERA_MAP='{"front":"overhead","wrist":"wrist"}'
 ```
 
 #### Option B: Set it at runtime via MCP tool
@@ -775,14 +775,14 @@ export SO100_POLICY_CAMERA_MAP='{"front":"overhead","wrist":"wrist"}'
 Call the tool:
 
 ```text
-set_policy(policy_name="smolvla", policy_id="Gurkinator/smolvla_so100_policy")
+set_policy(policy_name="smolvla", policy_id="Gurkinator/smolvla_so101_policy")
 ```
 
 ### Run MCP Server
 
 **Option A: For Claude Code (stdio transport)**
 ```bash
-python -m so100_vla_demo.mcp_server
+python -m so101_vla_demo.mcp_server
 ```
 Configure via `.mcp.json` (see Quick Start above).
 
@@ -790,13 +790,13 @@ Configure via `.mcp.json` (see Quick Start above).
 ```bash
 # Set environment first
 export PYTHONPATH=/path/to/urdf-os/src
-export SO100_CAMERA_SOURCES="/dev/video4,/dev/video6"
-export SO100_CAMERA_NAMES="wrist,overhead"
-export SO100_PORT="/dev/ttyACM0"
-export SMOLVLA_POLICY_ID="Gurkinator/smolvla_so100_policy"
+export SO101_CAMERA_SOURCES="/dev/video0,/dev/video4"
+export SO101_CAMERA_NAMES="front,mount"
+export SO101_PORT="/dev/ttyACM0"
+export SMOLVLA_POLICY_ID="Gurkinator/smolvla_so101_policy"
 
 # Run as HTTP server
-python -m so100_vla_demo.mcp_server --transport sse --host 0.0.0.0 --port 8765
+python -m so101_vla_demo.mcp_server --transport sse --host 0.0.0.0 --port 8765
 ```
 Clients connect to: `http://localhost:8765/sse`
 
@@ -816,12 +816,12 @@ Clients connect to: `http://localhost:8765/sse`
 
 ## How to Use This Scaffold (Step‑by‑Step)
 
-### 1. Connect SO100 and test camera manually
+### 1. Connect SO101 and test camera manually
 
 Before running anything here:
 
 1. Use a simple script (or `lerobot-record` with 1–2 episodes) to verify:
-   - The SO100 arm connects on your chosen port.
+   - The SO101 arm connects on your chosen port.
    - The wrist camera index is correct and returns frames.
 
 ### 2. Run the debug server and test over WebSocket
@@ -829,7 +829,7 @@ Before running anything here:
 From the root of the LeRobot repo:
 
 ```bash
-uvicorn so100_vla_demo.server:app --host 0.0.0.0 --port 8000
+uvicorn so101_vla_demo.server:app --host 0.0.0.0 --port 8000
 ```
 
 Then connect with a WebSocket client (e.g. `websocat` or your own UI):
@@ -849,15 +849,15 @@ At this stage, no policies or real LLM are needed; you’re only validating wiri
 
 ### 3. Full mock demo in the browser (no hardware)
 
-For teammates and judges without the SO100 arm, you can run a **fully self‑contained mock demo**:
+For teammates and judges without the SO101 arm, you can run a **fully self‑contained mock demo**:
 
 ```bash
-python -m so100_vla_demo.demo_script
+python -m so101_vla_demo.demo_script
 ```
 
 This will:
 
-- Default to real hardware when it looks like SO100 is connected, otherwise fall back to `USE_MOCK_ROBOT=true`.
+- Default to real hardware when it looks like SO101 is connected, otherwise fall back to `USE_MOCK_ROBOT=true`.
 - You can force mock mode with `USE_MOCK_ROBOT=true`.
 - Start the FastAPI server on `http://localhost:8000`.
 - Serve the web UI at `http://localhost:8000/static/index.html`.
@@ -887,14 +887,14 @@ Once you have real policies and object detection, you can replace this scripted 
 
 ### 4. Record your own datasets (search & grasp)
 
-On the SO100 machine, use `lerobot-record` twice:
+On the SO101 machine, use `lerobot-record` twice:
 
-1. **Search dataset** (e.g. `my_so100_search_for_ball`):
+1. **Search dataset** (e.g. `my_so101_search_for_ball`):
    - Start with the ball hidden/partially occluded.
    - Teleoperate the arm/camera to **search until the ball is visible and centered**.
    - Each episode ends when you can clearly see the ball.
 
-2. **Grasp dataset** (e.g. `my_so100_grasp_ball`):
+2. **Grasp dataset** (e.g. `my_so101_grasp_ball`):
    - Start from poses where the ball is visible.
    - Teleoperate the arm to grasp and lift the ball.
 
@@ -907,7 +907,7 @@ On the MI300X machine (with ROCm‑enabled PyTorch):
 1. **Search policy**:
    ```bash
    lerobot-train \
-     --dataset.repo_id=my_so100_search_for_ball \
+     --dataset.repo_id=my_so101_search_for_ball \
      --dataset.root=/path/to/datasets \
      --policy.type=diffusion \  # or act, simple model first
      --policy.push_to_hub=false \
@@ -919,7 +919,7 @@ On the MI300X machine (with ROCm‑enabled PyTorch):
 2. **Grasp policy**:
    ```bash
    lerobot-train \
-     --dataset.repo_id=my_so100_grasp_ball \
+     --dataset.repo_id=my_so101_grasp_ball \
      --dataset.root=/path/to/datasets \
      --policy.type=smolvla \    # or xvla/diffusion, depending on your design
      --policy.push_to_hub=false \
@@ -931,20 +931,20 @@ Each training run produces a `pretrained_model` directory containing `config.jso
 
 ### 6. Plug trained policies into the demo runner
 
-Once you have policies, copy or mount the `pretrained_model` dirs onto the SO100 machine and run:
+Once you have policies, copy or mount the `pretrained_model` dirs onto the SO101 machine and run:
 
 ```bash
-python -m so100_vla_demo.run_demo \
+python -m so101_vla_demo.run_demo \
   --object-name "tennis ball" \
   --search-policy-path /path/to/search/pretrained_model \
   --grasp-policy-path /path/to/grasp/pretrained_model \
-  --so100-port /dev/ttyUSB0 \
+  --so101-port /dev/ttyUSB0 \
   --camera-sources "0"
 ```
 
 The orchestrator will:
 
-1. Connect SO100.
+1. Connect SO101.
 2. Run the search skill until your detection function says the ball is visible.
 3. Run the grasp skill for a fixed horizon.
 4. Disconnect.
@@ -969,7 +969,7 @@ After everything works with the stub:
      ```
 3. Restart the server:
    ```bash
-   uvicorn so100_vla_demo.server:app --host 0.0.0.0 --port 8000
+   uvicorn so101_vla_demo.server:app --host 0.0.0.0 --port 8000
    ```
 4. Your web UI now:
    - Receives live frames (and later thumbnails/images).
@@ -1017,4 +1017,4 @@ After everything works with the stub:
      4. LLM decides to “grasp”.
      5. `grasp_object` skill grasps the ball.
 
-This scaffold should give you a clear path from **ideas** (active perception + VLA manipulation) to a working hackathon demo using SO100, LeRobot, your AMD GPU, and whatever LLM backend you prefer.
+This scaffold should give you a clear path from **ideas** (active perception + VLA manipulation) to a working hackathon demo using SO101, LeRobot, your AMD GPU, and whatever LLM backend you prefer.

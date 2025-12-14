@@ -11,7 +11,7 @@ from .llm_config import LLMConfig
 logger = logging.getLogger(__name__)
 
 # System prompt for agentic robot control
-ROBOT_SYSTEM_PROMPT = """You are an AI assistant controlling an SO100 robotic arm with multiple cameras.
+ROBOT_SYSTEM_PROMPT = """You are an AI assistant controlling an SO101 robotic arm with multiple cameras.
 
 You can see live camera feeds from the robot and use tools to control it. When the user asks you to manipulate objects:
 

@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 """
-Minimal FastAPI WebSocket server for the SO100 VLA demo.
+Minimal FastAPI WebSocket server for the SO101 VLA demo.
 
 Features:
-- Streams camera frames from SO100RobotInterface to connected clients.
+- Streams camera frames from SO101RobotInterface to connected clients.
 - Accepts simple chat messages and answers via a pluggable LLM engine.
 
 Usage (backend only):
 
-    uvicorn so100_vla_demo.server:app --host 0.0.0.0 --port 8000
+    uvicorn so101_vla_demo.server:app --host 0.0.0.0 --port 8000
 
 Then connect with a WebSocket client to:
     ws://localhost:8000/ws
@@ -44,19 +44,20 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from PIL import Image
 
-from .config import SO100DemoConfig
+from .config import SO101DemoConfig, _parse_camera_names, _parse_camera_sources
 from .llm_config import LLMConfig
 from .llm_engine import BaseLLMEngine, StubEngine, make_llm_engine, ROBOT_TOOLS
 from .mock_robot_interface import MockRobotInterface
-from .robot_interface import SO100RobotInterface, make_robot_interface
+from .robot_interface import SO101RobotInterface, make_robot_interface
 from .search_skill import SearchPolicySkill
 from .grasp_skill import GraspPolicySkill
 from lerobot.utils.constants import HF_LEROBOT_CALIBRATION
+from lerobot.teleoperators import Teleoperator, make_teleoperator_from_config, so101_leader
 
 logger = logging.getLogger(__name__)
 
 
-app = FastAPI(title="SO100 VLA Demo Server")
+app = FastAPI(title="SO101 VLA Demo Server")
 
 # CORS for frontend debugging (adjust origin as needed)
 app.add_middleware(
@@ -100,7 +101,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # Global demo objects (lazy init)
-demo_cfg = SO100DemoConfig()
+demo_cfg = SO101DemoConfig()
 
 # LLM configuration can be specified via a JSON file or env vars.
 _llm_config_path = Path(__file__).with_name("llm_config.json")
@@ -110,17 +111,18 @@ else:
     llm_cfg = LLMConfig.load()
 llm_engine: BaseLLMEngine = make_llm_engine(llm_cfg)
 
-# Robot interface: real SO100 or mock, depending on config.
+# Robot interface: real SO101 or mock, depending on config.
 robot_interface = make_robot_interface(demo_cfg)
 
 # Control flags
 streaming = False
 stream_task: asyncio.Task | None = None
 behavior_task: asyncio.Task | None = None
-# Teleop process state
-teleop_process: asyncio.subprocess.Process | None = None
-teleop_process_cmd: list[str] = []
-teleop_process_started_at: float | None = None
+# Teleop in-process state
+teleop_task: asyncio.Task | None = None
+teleop_device_current: "Teleoperator | None" = None
+teleop_started_at: float | None = None
+teleop_error: str | None = None
 teleop_process_lock = asyncio.Lock()
 
 # Device config / calibration discovery
@@ -135,14 +137,64 @@ class DevicePortUpdate(BaseModel):
 
 
 class TeleopStartRequest(BaseModel):
-    teleop_id: str
-    robot_id: str
+    teleop_id: str | None = None
+    robot_id: str | None = None
     teleop_port: str | None = None
     robot_port: str | None = None
-    teleop_type: str = "so100_leader"
-    robot_type: str = "so100_follower"
+    teleop_type: str = "so101_leader"
+    robot_type: str = "so101_follower"
     fps: int = 60
     display_data: bool = False
+
+
+def _parse_optional_int_env(env_name: str, default: int) -> int:
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _build_cameras_flag_from_env() -> str | None:
+    if not (
+        os.environ.get("SO101_CAMERA_SOURCES")
+        or os.environ.get("SO101_CAMERA_INDEXES")
+        or os.environ.get("SO101_CAMERA_INDEX")
+    ):
+        return None
+
+    sources = _parse_camera_sources()
+    if not sources:
+        return None
+    names = _parse_camera_names()
+    width = _parse_optional_int_env("SO101_CAMERA_WIDTH", 640)
+    height = _parse_optional_int_env("SO101_CAMERA_HEIGHT", 480)
+    fps = _parse_optional_int_env("SO101_CAMERA_FPS", 30)
+
+    parts = []
+    for idx, src in enumerate(sources):
+        name = names[idx] if idx < len(names) else f"camera_{idx}"
+        src_val = src if isinstance(src, int) else f'"{src}"'
+        parts.append(
+            f"{name}: {{type: opencv, index_or_path: {src_val}, width: {width}, height: {height}, fps: {fps}}}"
+        )
+    if not parts:
+        return None
+    return "{ " + ", ".join(parts) + " }"
+
+
+def _get_env_teleop_defaults() -> Dict[str, Any]:
+    return {
+        "teleop_id": os.environ.get("SO101_LEADER_ID"),
+        "teleop_port": os.environ.get("SO101_LEADER_PORT"),
+        "teleop_type": "so101_leader",
+        "robot_id": os.environ.get("SO101_ROBOT_ID"),
+        "robot_port": os.environ.get("SO101_PORT"),
+        "robot_type": "so101_follower",
+        "cameras": _build_cameras_flag_from_env(),
+    }
 
 
 def _load_device_ports() -> Dict[str, Dict[str, Dict[str, str]]]:
@@ -201,52 +253,6 @@ def _discover_devices() -> list[Dict[str, Any]]:
     return devices
 
 
-async def _stop_teleop_process(force: bool = False) -> None:
-    """
-    Stop the background lerobot-teleoperate process if running.
-    """
-    global teleop_process, teleop_process_cmd, teleop_process_started_at
-    if teleop_process is None:
-        return
-    if teleop_process.returncode is not None:
-        teleop_process = None
-        teleop_process_cmd = []
-        teleop_process_started_at = None
-        return
-
-    teleop_process.terminate()
-    try:
-        await asyncio.wait_for(teleop_process.wait(), timeout=5 if not force else 1)
-    except asyncio.TimeoutError:
-        teleop_process.kill()
-    teleop_process = None
-    teleop_process_cmd = []
-    teleop_process_started_at = None
-
-
-async def _pipe_subprocess_output(proc: asyncio.subprocess.Process, name: str) -> None:
-    """
-    Drain stdout/stderr of a subprocess to avoid blocking and emit to logger.
-    """
-    assert proc.stdout is not None and proc.stderr is not None
-
-    async def _reader(stream: asyncio.StreamReader, log_fn) -> None:
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            try:
-                decoded = line.decode("utf-8", errors="replace").rstrip()
-            except Exception:
-                decoded = str(line)
-            log_fn("%s | %s", name, decoded)
-
-    await asyncio.gather(
-        _reader(proc.stdout, logger.info),
-        _reader(proc.stderr, logger.error),
-    )
-
-
 async def camera_stream_loop() -> None:
     """
     Background task: grab frames from all cameras and broadcast.
@@ -257,7 +263,7 @@ async def camera_stream_loop() -> None:
     logger.info("Camera stream loop started.")
     # Connect robot lazily here to avoid blocking app startup if arm is offline
     try:
-        # Both the real SO100RobotInterface and MockRobotInterface expose
+        # Both the real SO101RobotInterface and MockRobotInterface expose
         # a connect() method. We lazily connect here for streaming.
         robot_interface.connect()
     except Exception as e:  # noqa: BLE001
@@ -335,6 +341,10 @@ async def camera_stream_loop() -> None:
             await asyncio.sleep(1.0 / demo_cfg.demo_fps)
     finally:
         logger.info("Camera stream loop stopped.")
+        try:
+            robot_interface.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _get_current_images_b64() -> Dict[str, str]:
@@ -354,6 +364,127 @@ def _get_current_images_b64() -> Dict[str, str]:
     except Exception as e:
         logger.warning("Could not get frames for VLM: %s", e)
         return {}
+
+
+def _encode_images(images: Dict[str, np.ndarray]) -> Dict[str, Dict[str, Any]]:
+    cameras_data: Dict[str, Dict[str, Any]] = {}
+    for cam_name, frame in images.items():
+        try:
+            if frame is None:
+                continue
+            if isinstance(frame, np.ndarray):
+                if frame.ndim == 3 and frame.shape[0] in (1, 3, 4) and frame.shape[-1] not in (1, 3, 4):
+                    frame = np.transpose(frame, (1, 2, 0))
+                if frame.dtype != np.uint8:
+                    frame = np.clip(frame, 0, 255).astype(np.uint8)
+
+            pil_img = Image.fromarray(frame)
+            pil_img.thumbnail((320, 240))
+            buf = BytesIO()
+            pil_img.save(buf, format="JPEG")
+            jpeg_bytes = buf.getvalue()
+            jpeg_b64 = base64.b64encode(jpeg_bytes).decode("utf-8")
+
+            shape = list(getattr(frame, "shape", []))
+            if len(shape) == 2:
+                shape.append(1)
+
+            cameras_data[cam_name] = {
+                "image_b64": jpeg_b64,
+                "shape": shape,
+            }
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to encode camera %s frame: %s", cam_name, e)
+    return cameras_data
+
+
+async def _teleop_loop(teleop: Teleoperator, fps: int, display_data: bool) -> None:
+    """
+    In-process teleop loop that shares the robot/cameras with the server to avoid port contention.
+    """
+    global streaming, teleop_error
+    teleop_error = None
+    logger.info("Starting in-process teleop loop (fps=%s, display=%s)", fps, display_data)
+    robot_interface.connect()
+    if robot_interface.robot is None:
+        raise RuntimeError("Robot interface not connected.")
+
+    teleop.connect(calibrate=False)
+    try:
+        while True:
+            loop_start = time.perf_counter()
+            obs = robot_interface.robot.get_observation()
+            raw_action = teleop.get_action()
+            robot_interface.robot.send_action(raw_action)
+
+            if streaming:
+                images = {k: v for k, v in obs.items() if isinstance(v, np.ndarray)}
+                joints = {k: float(v) for k, v in obs.items() if k.endswith(".pos")}
+                await manager.broadcast_json(
+                    {
+                        "type": "frame",
+                        "cameras": _encode_images(images),
+                        "joints": joints,
+                    }
+                )
+
+            dt = time.perf_counter() - loop_start
+            await asyncio.sleep(max(0, 1 / fps - dt))
+    except asyncio.CancelledError:
+        teleop_error = "teleop_cancelled"
+        raise
+    except Exception as e:  # noqa: BLE001
+        teleop_error = str(e)
+        logger.exception("Teleop loop error: %s", e)
+        raise
+    finally:
+        try:
+            teleop.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            robot_interface.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+async def _stop_streaming(disconnect_robot: bool = False) -> None:
+    """Stop background streaming and optionally release the robot connection."""
+    global streaming, stream_task
+    streaming = False
+    if stream_task is not None:
+        stream_task.cancel()
+        try:
+            await stream_task
+        except asyncio.CancelledError:
+            pass
+        stream_task = None
+    if disconnect_robot:
+        try:
+            robot_interface.disconnect()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Error disconnecting robot after stopping stream: %s", e)
+
+
+async def _stop_teleop(disconnect_robot: bool = True) -> None:
+    """Cancel in-process teleop task and cleanup."""
+    global teleop_task, teleop_device_current, teleop_started_at, teleop_error, streaming
+    streaming = False
+    if teleop_task is not None:
+        teleop_task.cancel()
+        try:
+            await teleop_task
+        except asyncio.CancelledError:
+            pass
+    teleop_task = None
+    teleop_device_current = None
+    teleop_started_at = None
+    teleop_error = None
+    if disconnect_robot:
+        try:
+            robot_interface.disconnect()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Error disconnecting robot after stopping teleop: %s", e)
 
 
 def _is_mock_robot() -> bool:
@@ -663,7 +794,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 }:
                     if not streaming:
                         streaming = True
-                        stream_task = asyncio.create_task(camera_stream_loop())
+                        if teleop_task is None:
+                            stream_task = asyncio.create_task(camera_stream_loop())
                     await websocket.send_json(
                         {"type": "status", "text": "streaming_started", "phase": "streaming"}
                     )
@@ -676,10 +808,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     "stop stream",
                     "stop_stream",
                 }:
-                    streaming = False
-                    if stream_task is not None:
-                        stream_task.cancel()
-                        stream_task = None
+                    await _stop_streaming(disconnect_robot=teleop_task is None)
                     await websocket.send_json(
                         {"type": "status", "text": "streaming_stopped", "phase": "idle"}
                     )
@@ -808,6 +937,14 @@ async def get_device_config() -> Dict[str, Any]:
     }
 
 
+@app.get("/api/teleop/defaults")
+async def teleop_defaults() -> Dict[str, Any]:
+    """
+    Return teleop/robot defaults derived from environment variables (as set by start_so101_demo.sh).
+    """
+    return _get_env_teleop_defaults()
+
+
 @app.post("/api/device-config")
 async def set_device_port(update: DevicePortUpdate) -> Dict[str, Any]:
     """
@@ -821,13 +958,12 @@ async def set_device_port(update: DevicePortUpdate) -> Dict[str, Any]:
 
 @app.get("/api/teleop/status")
 async def teleop_status() -> Dict[str, Any]:
-    running = teleop_process is not None and teleop_process.returncode is None
+    running = teleop_task is not None and not teleop_task.done()
     return {
         "running": running,
-        "pid": teleop_process.pid if teleop_process else None,
-        "returncode": teleop_process.returncode if teleop_process else None,
-        "cmd": teleop_process_cmd,
-        "started_at": teleop_process_started_at,
+        "started_at": teleop_started_at,
+        "teleop_id": getattr(teleop_device_current, "id", None),
+        "error": teleop_error,
     }
 
 
@@ -837,45 +973,69 @@ async def start_teleop(req: TeleopStartRequest) -> Dict[str, Any]:
     Launch `lerobot-teleoperate` in the background using stored port hints or
     values provided in the request body.
     """
-    global teleop_process, teleop_process_cmd, teleop_process_started_at
+    global teleop_task, teleop_device_current, teleop_started_at
     async with teleop_process_lock:
-        if teleop_process is not None and teleop_process.returncode is None:
+        if teleop_task is not None and not teleop_task.done():
             raise HTTPException(status_code=400, detail="Teleop already running.")
 
+        # Stop streaming and release robot port so teleop can claim it.
+        await _stop_streaming(disconnect_robot=True)
+        await _stop_teleop(disconnect_robot=True)
+
+        env_teleop_port = os.environ.get("SO101_LEADER_PORT")
+        env_robot_port = os.environ.get("SO101_PORT")
+        env_teleop_id = os.environ.get("SO101_LEADER_ID")
+        env_robot_id = os.environ.get("SO101_ROBOT_ID")
+
         stored_ports = _load_device_ports()
-        teleop_port = req.teleop_port or stored_ports.get("teleop", {}).get(req.teleop_type, {}).get(req.teleop_id)
-        robot_port = req.robot_port or stored_ports.get("robot", {}).get(req.robot_type, {}).get(req.robot_id)
+        teleop_id = req.teleop_id or env_teleop_id
+        robot_id = req.robot_id or env_robot_id
+        teleop_port = (
+            req.teleop_port
+            or env_teleop_port
+            or stored_ports.get("teleop", {}).get(req.teleop_type, {}).get(teleop_id)
+        )
+        robot_port = (
+            req.robot_port
+            or env_robot_port
+            or stored_ports.get("robot", {}).get(req.robot_type, {}).get(robot_id)
+        )
+        if not teleop_id:
+            raise HTTPException(
+                status_code=400,
+                detail="teleop_id is required (set SO101_LEADER_ID in the environment or pass teleop_id).",
+            )
+        if not robot_id:
+            raise HTTPException(
+                status_code=400,
+                detail="robot_id is required (set SO101_ROBOT_ID in the environment or pass robot_id).",
+            )
         if not teleop_port:
             raise HTTPException(status_code=400, detail="teleop_port is required (not found in device ports store).")
         if not robot_port:
             raise HTTPException(status_code=400, detail="robot_port is required (not found in device ports store).")
 
-        cmd = [
-            "lerobot-teleoperate",
-            f"--teleop.type={req.teleop_type}",
-            f"--teleop.port={teleop_port}",
-            f"--teleop.id={req.teleop_id}",
-            f"--robot.type={req.robot_type}",
-            f"--robot.port={robot_port}",
-            f"--robot.id={req.robot_id}",
-            f"--fps={req.fps}",
-            f"--display_data={'true' if req.display_data else 'false'}",
-        ]
+        if req.teleop_type != "so101_leader":
+            raise HTTPException(status_code=400, detail="Only so101_leader teleop is supported in-process.")
 
-        teleop_process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        teleop_process_cmd = cmd
-        teleop_process_started_at = time.time()
-        asyncio.create_task(_pipe_subprocess_output(teleop_process, "teleop"))
-        logger.info("Started teleop process pid=%s cmd=%s", teleop_process.pid, cmd)
-        return {"ok": True, "pid": teleop_process.pid, "cmd": cmd}
+        teleop_cfg = so101_leader.SO101LeaderConfig(port=teleop_port, id=teleop_id)
+        teleop_device = make_teleoperator_from_config(teleop_cfg)
+
+        # Ensure robot interface is configured for the requested port
+        robot_interface.config.port = robot_port
+
+        teleop_device_current = teleop_device
+        teleop_started_at = time.time()
+        teleop_task = asyncio.create_task(_teleop_loop(teleop_device, req.fps, req.display_data))
+
+        logger.info("Started in-process teleop (id=%s, port=%s) -> robot port=%s", teleop_id, teleop_port, robot_port)
+        return {"ok": True, "mode": "in_process", "teleop_id": teleop_id, "robot_id": robot_id}
 
 
 @app.post("/api/teleop/stop")
 async def stop_teleop() -> Dict[str, Any]:
     async with teleop_process_lock:
-        await _stop_teleop_process()
+        await _stop_teleop(disconnect_robot=True)
     return {"ok": True}
 
 

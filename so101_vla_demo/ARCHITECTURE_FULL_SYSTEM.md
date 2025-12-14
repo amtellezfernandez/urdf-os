@@ -1,4 +1,4 @@
-# SO100 VLA Demo – Full System Architecture
+# SO101 VLA Demo – Full System Architecture
 
 This document dives into the detailed architecture: modules, data flow, message formats, and how things should evolve once real policies and VLMs are plugged in.
 
@@ -8,7 +8,7 @@ This document dives into the detailed architecture: modules, data flow, message 
 
 ### 1.1 Frontend (Browser)
 
-**File:** `so100_vla_demo/static/index.html`
+**File:** `so101_vla_demo/static/index.html`
 
 Responsibilities:
 
@@ -27,21 +27,21 @@ Responsibilities:
 
 ### 1.2 Backend Server
 
-**File:** `so100_vla_demo/server.py`
+**File:** `so101_vla_demo/server.py`
 
 Key parts:
 
 - `FastAPI` app:
   - Configures CORS for local development.
-  - Mounts static files (`/static -> so100_vla_demo/static`).
+  - Mounts static files (`/static -> so101_vla_demo/static`).
 - `ConnectionManager`:
   - Tracks active WebSocket connections.
   - Provides `broadcast_json(message)` for multicasting frames/status/reasoning.
 - Global singletons:
-  - `demo_cfg: SO100DemoConfig` (config.py).
+  - `demo_cfg: SO101DemoConfig` (config.py).
   - `llm_cfg: LLMConfig` (llm_config.py / llm_config.json).
   - `llm_engine: BaseLLMEngine` (llm_engine.py).
-  - `robot_interface: SO100RobotInterface | MockRobotInterface` (robot_interface.py / mock_robot_interface.py via `make_robot_interface`).
+  - `robot_interface: SO101RobotInterface | MockRobotInterface` (robot_interface.py / mock_robot_interface.py via `make_robot_interface`).
   - Async tasks:
     - `stream_task` – camera streaming loop.
     - `behavior_task` – `search_and_grasp` loop (mock mode now).
@@ -161,11 +161,11 @@ Supported `action` values:
 
 ### 2.1 Configuration
 
-**File:** `so100_vla_demo/config.py`
+**File:** `so101_vla_demo/config.py`
 
-- `SO100DemoConfig` fields:
-  - `port`: SO100 serial port (default `/dev/ttyUSB0`, or `SO100_PORT`).
-  - `camera_indexes`: camera sources (OpenCV indices or `/dev/video*` paths) from `SO100_CAMERA_SOURCES` / `SO100_CAMERA_INDEXES` / legacy `SO100_CAMERA_INDEX`.
+- `SO101DemoConfig` fields:
+  - `port`: SO101 serial port (default `/dev/ttyUSB0`, or `SO101_PORT`).
+  - `camera_indexes`: camera sources (OpenCV indices or `/dev/video*` paths) from `SO101_CAMERA_SOURCES` / `SO101_CAMERA_INDEXES` / legacy `SO101_CAMERA_INDEX`.
   - `demo_fps`: streaming/control FPS (default `15`).
   - `use_mock`: from `USE_MOCK_ROBOT` (`"1"/"true"/"yes"` → True).
   - `use_real_cameras`: when `use_mock=True`, stream from real cameras if `USE_REAL_CAMERAS=true`.
@@ -177,28 +177,28 @@ Supported `action` values:
 
 ### 2.2 Real Robot Interface
 
-**File:** `so100_vla_demo/robot_interface.py`
+**File:** `so101_vla_demo/robot_interface.py`
 
-- `SO100RobotInterface`:
+- `SO101RobotInterface`:
   - `config: SO100FollowerConfig`.
-  - `connect()` → best-effort auto-detects serial port if needed and calls `SO100Follower.connect(calibrate=...)` (controlled by `SO100_CALIBRATE`).
+  - `connect()` → best-effort auto-detects serial port if needed and calls `SO100Follower.connect(calibrate=...)` (controlled by `SO101_CALIBRATE`).
   - `disconnect()` → calls `robot.disconnect()`.
   - `get_observation()`:
     - Calls `robot.get_observation()` (LeRobot).
     - Extracts all configured camera frames and joint positions (`{name: obs[f"{name}.pos"]}`).
   - `send_joint_targets(joint_targets)`:
     - Converts to `{f"{name}.pos": value}` and calls `robot.send_action(action)`.
-- `make_robot_interface(cfg: SO100DemoConfig)`:
+- `make_robot_interface(cfg: SO101DemoConfig)`:
   - If `cfg.use_mock` is `True`, returns a `MockRobotInterface`.
-  - Else, returns `SO100RobotInterface(cfg.to_robot_config())`.
+  - Else, returns `SO101RobotInterface(cfg.to_robot_config())`.
 
 ### 2.3 Mock Robot Interface
 
-**File:** `so100_vla_demo/mock_robot_interface.py`
+**File:** `so101_vla_demo/mock_robot_interface.py`
 
 - `MockRobotInterface`:
   - Holds:
-    - `cfg: SO100DemoConfig`.
+    - `cfg: SO101DemoConfig`.
     - `joints: dict[str, float]` with some fake joint names.
     - Optional `_static_image`, `_video_cap`, `_frame_index`.
   - `connect()`:
@@ -221,7 +221,7 @@ Supported `action` values:
 
 ### 3.1 Search Policy Skill
 
-**File:** `so100_vla_demo/search_skill.py`
+**File:** `so101_vla_demo/search_skill.py`
 
 - `SearchPolicySkill`:
   - Attributes:
@@ -245,7 +245,7 @@ Supported `action` values:
 
 ### 3.2 Grasp Policy Skill
 
-**File:** `so100_vla_demo/grasp_skill.py`
+**File:** `so101_vla_demo/grasp_skill.py`
 
 - `GraspPolicySkill`:
   - Similar to `SearchPolicySkill`, but focused on the manipulation phase.
@@ -258,12 +258,12 @@ Supported `action` values:
 
 ### 3.3 High‑Level Orchestrator
 
-**File:** `so100_vla_demo/demo_orchestrator.py`
+**File:** `so101_vla_demo/demo_orchestrator.py`
 
 - `SO100DemoOrchestrator`:
   - Fields:
-    - `cfg: SO100DemoConfig`.
-    - `robot: SO100RobotInterface`.
+    - `cfg: SO101DemoConfig`.
+    - `robot: SO101RobotInterface`.
     - `search_skill: SearchPolicySkill`.
     - `grasp_skill: GraspPolicySkill`.
     - `detect_fn(frame, object_name) -> bool`.
@@ -277,15 +277,15 @@ Supported `action` values:
 
 ### 3.4 CLI Entry Point
 
-**File:** `so100_vla_demo/run_demo.py`
+**File:** `so101_vla_demo/run_demo.py`
 
 - Parses arguments:
   - `--object-name`,
   - `--search-policy-path`,
   - `--grasp-policy-path`,
-  - `--so100-port`,
+  - `--so101-port`,
   - `--camera-index`.
-- Builds `SO100DemoConfig`, `SO100RobotInterface`, `SearchPolicySkill`, `GraspPolicySkill`.
+- Builds `SO101DemoConfig`, `SO101RobotInterface`, `SearchPolicySkill`, `GraspPolicySkill`.
 - Uses a placeholder `simple_pixel_detector(frame, object_name)` (always `False`) – intentionally safe until a real detector is plugged in.
 - Calls `SO100DemoOrchestrator.run(object_name)`.
 
@@ -297,13 +297,13 @@ Supported `action` values:
 
 **Files:**
 
-- `so100_vla_demo/llm_config.py`
+- `so101_vla_demo/llm_config.py`
   - `LLMConfig` dataclass:
     - `provider`, `model_name`, `api_key_env`.
   - `LLMConfig.load(config_path=None)` reads JSON or env vars.
-- `so100_vla_demo/llm_config.json`
+- `so101_vla_demo/llm_config.json`
   - Default config used by server.
-- `so100_vla_demo/llm_engine.py`
+- `so101_vla_demo/llm_engine.py`
   - `BaseLLMEngine` abstract class with `async chat(...)`.
   - Implementations:
     - `GeminiEngine`, `ClaudeEngine`, `QwenEngine`: structure only, `chat()` raises `NotImplementedError`.
@@ -339,7 +339,7 @@ This keeps the architecture **hierarchical**:
 
 1. User runs:
    ```bash
-   python3 -m so100_vla_demo.demo_script
+   python3 -m so101_vla_demo.demo_script
    ```
 2. `demo_script.py` sets `USE_MOCK_ROBOT=true` and starts FastAPI/uvicorn.
 3. User opens `http://localhost:8000/static/index.html`.
@@ -362,18 +362,18 @@ This keeps the architecture **hierarchical**:
    - Shows evolving frames.
    - Shows reasoning log as if a planner was operating.
 
-### 5.2 Real SO100 + Policies (CLI)
+### 5.2 Real SO101 + Policies (CLI)
 
 1. Robot machine:
-   - SO100 connected at the right serial port.
+   - SO101 connected at the right serial port.
    - Wrist camera accessible via OpenCV index.
 2. User runs:
    ```bash
-   python3 -m so100_vla_demo.run_demo \
+   python3 -m so101_vla_demo.run_demo \
      --object-name "tennis ball" \
      --search-policy-path /path/to/search/pretrained_model \
      --grasp-policy-path /path/to/grasp/pretrained_model \
-     --so100-port /dev/ttyUSB0 \
+     --so101-port /dev/ttyUSB0 \
      --camera-index 0
    ```
 3. `run_demo.py`:
@@ -385,16 +385,16 @@ This keeps the architecture **hierarchical**:
    - Runs grasp policy for the configured horizon.
    - Disconnects robot.
 
-### 5.3 Future: Real SO100 + Browser + Policies
+### 5.3 Future: Real SO101 + Browser + Policies
 
 Once policies and detection are ready:
 
 1. Start server in real mode:
    ```bash
    USE_MOCK_ROBOT=false \
-   SO100_PORT=/dev/ttyUSB0 \
-   SO100_CAMERA_INDEX=0 \
-   uvicorn so100_vla_demo.server:app --host 0.0.0.0 --port 8000
+   SO101_PORT=/dev/ttyUSB0 \
+   SO101_CAMERA_INDEX=0 \
+   uvicorn so101_vla_demo.server:app --host 0.0.0.0 --port 8000
    ```
 2. UI stays the same (`/static/index.html`).
 3. Extend server’s `"search_and_grasp"` handler to:
@@ -419,4 +419,4 @@ Once policies and detection are ready:
   - Supports both CLI and WebSocket triggering.
 - Add safety constraints (workspace limits, timeouts, emergency stop).
 
-This document, together with `ARCHITECTURE_HIGH_LEVEL.md` and `README.md`, should give your teammates everything they need to understand and extend the SO100 demo for the hackathon.+
+This document, together with `ARCHITECTURE_HIGH_LEVEL.md` and `README.md`, should give your teammates everything they need to understand and extend the SO101 demo for the hackathon.+

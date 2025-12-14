@@ -1,4 +1,4 @@
-# SO100 VLA Demo – High‑Level Architecture
+# SO101 VLA Demo – High‑Level Architecture
 
 This document gives the big‑picture view of the hackathon demo so new teammates can quickly understand **what the system does** and **how the main blocks connect**, without diving into implementation details.
 
@@ -6,7 +6,7 @@ This document gives the big‑picture view of the hackathon demo so new teammate
 
 ## Core Idea
 
-Demonstrate **hierarchical control** of the SO100 arm:
+Demonstrate **hierarchical control** of the SO101 arm:
 
 - A **vision‑language model (VLM/LLM)** reasons at a high level from camera images and user text.
 - Learned **robot policies (VLA / diffusion / ACT)** implement low‑level motions as reusable **skills**:
@@ -19,7 +19,7 @@ Demonstrate **hierarchical control** of the SO100 arm:
 
 Everything can run either:
 
-- With the real **SO100 arm**, or
+- With the real **SO101 arm**, or
 - In a **mock mode** with a synthetic scene (for judges or remote teammates).
 
 ---
@@ -28,7 +28,7 @@ Everything can run either:
 
 ### 1. Web UI (Browser)
 
-- File: `so100_vla_demo/static/index.html`
+- File: `so101_vla_demo/static/index.html`
 - Responsibilities:
   - Connect to the backend via WebSocket (`/ws`).
   - Display live camera frames from the robot (or mock).
@@ -42,7 +42,7 @@ Everything can run either:
 
 ### 2. Backend Server (FastAPI)
 
-- File: `so100_vla_demo/server.py`
+- File: `so101_vla_demo/server.py`
 - Responsibilities:
   - Host the WebSocket endpoint `/ws`.
   - Serve the static web UI at `/static/index.html`.
@@ -58,12 +58,12 @@ Everything can run either:
 ### 3. Robot Layer (Real vs Mock)
 
 - Files:
-  - `so100_vla_demo/config.py` – `SO100DemoConfig` (ports, camera index, mock flags).
-  - `so100_vla_demo/robot_interface.py` – `SO100RobotInterface` wrapping LeRobot’s `SO100Follower`.
-  - `so100_vla_demo/mock_robot_interface.py` – `MockRobotInterface` for synthetic scenes.
+  - `so101_vla_demo/config.py` – `SO101DemoConfig` (ports, camera index, mock flags).
+  - `so101_vla_demo/robot_interface.py` – `SO101RobotInterface` wrapping LeRobot’s `SO100Follower`.
+  - `so101_vla_demo/mock_robot_interface.py` – `MockRobotInterface` for synthetic scenes.
 - Responsibilities:
   - Abstract away **how** we get images and send joint commands:
-    - Real mode: use SO100 hardware (`SO100Follower`).
+    - Real mode: use SO101 hardware (`SO100Follower`).
     - Mock mode: generate synthetic images and fake joints, no hardware.
   - Provide a **uniform API**:
     - `connect()`, `disconnect()`,
@@ -73,10 +73,10 @@ Everything can run either:
 ### 4. Skills and Policies (Search / Grasp)
 
 - Files:
-  - `so100_vla_demo/search_skill.py` – `SearchPolicySkill`.
-  - `so100_vla_demo/grasp_skill.py` – `GraspPolicySkill`.
-  - `so100_vla_demo/demo_orchestrator.py` – `SO100DemoOrchestrator`.
-  - `so100_vla_demo/run_demo.py` – CLI runner for real policies.
+  - `so101_vla_demo/search_skill.py` – `SearchPolicySkill`.
+  - `so101_vla_demo/grasp_skill.py` – `GraspPolicySkill`.
+  - `so101_vla_demo/demo_orchestrator.py` – `SO100DemoOrchestrator`.
+  - `so101_vla_demo/run_demo.py` – CLI runner for real policies.
 - Responsibilities:
   - Load trained **LeRobot policies** (SmolVLA / XVLA / diffusion / ACT).
   - Provide high‑level skills:
@@ -89,9 +89,9 @@ Everything can run either:
 ### 5. LLM / VLM Layer
 
 - Files:
-  - `so100_vla_demo/llm_config.py` – lightweight config object.
-  - `so100_vla_demo/llm_config.json` – default provider/model config.
-  - `so100_vla_demo/llm_engine.py` – engine classes for Gemini / Claude / Qwen / Stub.
+  - `so101_vla_demo/llm_config.py` – lightweight config object.
+  - `so101_vla_demo/llm_config.json` – default provider/model config.
+  - `so101_vla_demo/llm_engine.py` – engine classes for Gemini / Claude / Qwen / Stub.
 - Responsibilities:
   - Abstract away the choice of provider (Gemini / Claude / Qwen).
   - Provide a single async API:
@@ -108,7 +108,7 @@ Everything can run either:
 
 - Command:
   ```bash
-  python3 -m so100_vla_demo.demo_script
+  python3 -m so101_vla_demo.demo_script
   ```
 - Flow:
   1. `demo_script.py` sets `USE_MOCK_ROBOT=true` and starts the server.
@@ -119,23 +119,23 @@ Everything can run either:
      - Server runs a scripted search + grasp sequence in mock mode.
      - Reasoning/status messages are displayed in the UI.
 
-### B. Browser Demo – Real SO100 (later)
+### B. Browser Demo – Real SO101 (later)
 
 - Command example:
   ```bash
   USE_MOCK_ROBOT=false \
-  SO100_PORT=/dev/ttyUSB0 \
-  SO100_CAMERA_INDEX=0 \
-  uvicorn so100_vla_demo.server:app --host 0.0.0.0 --port 8000
+  SO101_PORT=/dev/ttyUSB0 \
+  SO101_CAMERA_INDEX=0 \
+  uvicorn so101_vla_demo.server:app --host 0.0.0.0 --port 8000
   ```
 - Same UI, but frames come from the real wrist camera.
 - `search_and_grasp` will eventually call real learned policies instead of mock behavior.
 
-### C. CLI Demo – Real SO100 + Policies
+### C. CLI Demo – Real SO101 + Policies
 
 - Command:
   ```bash
-  python3 -m so100_vla_demo.run_demo \
+  python3 -m so101_vla_demo.run_demo \
     --object-name "tennis ball" \
     --search-policy-path /path/to/search/pretrained_model \
     --grasp-policy-path /path/to/grasp/pretrained_model

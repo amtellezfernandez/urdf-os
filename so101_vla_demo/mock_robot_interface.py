@@ -6,7 +6,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 
-from .config import SO100DemoConfig
+from .config import SO101DemoConfig
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class MockRobotInterface:
     and maintains a fake joint-state dictionary updated by `send_joint_targets`.
     """
 
-    cfg: SO100DemoConfig
+    cfg: SO101DemoConfig
     joints: Dict[str, float] = field(
         default_factory=lambda: {"joint_0": 0.0, "joint_1": 0.0, "joint_2": 0.0}
     )
@@ -231,9 +231,9 @@ class MockRobotInterface:
         return img
 
 
-def make_mock_robot_interface(cfg: SO100DemoConfig) -> MockRobotInterface:
+def make_mock_robot_interface(cfg: SO101DemoConfig) -> MockRobotInterface:
     """
-    Convenience factory to build a MockRobotInterface from SO100DemoConfig.
+    Convenience factory to build a MockRobotInterface from SO101DemoConfig.
     """
 
     return MockRobotInterface(cfg=cfg)

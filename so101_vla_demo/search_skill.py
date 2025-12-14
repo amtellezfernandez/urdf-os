@@ -11,7 +11,7 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.processor import PolicyProcessorPipeline
 from lerobot.utils.constants import ACTION, OBS_STR
 
-from .robot_interface import SO100RobotInterface
+from .robot_interface import SO101RobotInterface
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class SearchPolicySkill:
     - it assumes the policy expects a single image + state observation
       and outputs a single action vector.
 
-    You are expected to train this policy on your `my_so100_search_for_ball`
+    You are expected to train this policy on your `my_so101_search_for_ball`
     dataset and point `policy_path` to the `pretrained_model` directory.
     """
 
@@ -92,7 +92,7 @@ class SearchPolicySkill:
 
     def run_search_loop(
         self,
-        robot: SO100RobotInterface,
+        robot: SO101RobotInterface,
         object_name: str,
         detect_fn: DetectFn,
         max_steps: int = 50,
@@ -101,7 +101,7 @@ class SearchPolicySkill:
         Repeatedly runs the search policy until the object is visible or we exhaust steps.
 
         Args:
-            robot: connected SO100RobotInterface.
+            robot: connected SO101RobotInterface.
             object_name: e.g. "tennis ball".
             detect_fn: function(frame, object_name) -> bool telling if the object is visible.
             max_steps: maximum policy steps before giving up.

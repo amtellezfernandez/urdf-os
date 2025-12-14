@@ -11,7 +11,7 @@ import numpy as np
 
 from lerobot.robots.so100_follower import SO100Follower, SO100FollowerConfig
 
-from .config import SO100DemoConfig
+from .config import SO101DemoConfig
 from .mock_robot_interface import MockRobotInterface, make_mock_robot_interface
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def _discover_serial_ports() -> list[str]:
     """
-    Best-effort serial port discovery for SO100 (Linux-first).
+    Best-effort serial port discovery for SO101 (Linux-first).
 
     Returns a prioritized list:
     1) Stable symlinks under `/dev/serial/by-id/` (if present)
@@ -49,7 +49,7 @@ def _discover_serial_ports() -> list[str]:
 
 
 @dataclass
-class SO100RobotInterface:
+class SO101RobotInterface:
     """
     Thin wrapper around LeRobot's SO100Follower robot.
 
@@ -65,9 +65,9 @@ class SO100RobotInterface:
 
     def connect(self) -> None:
         if self.robot is not None and self.robot.is_connected:
-            logger.warning("SO100RobotInterface.connect called but robot is already connected.")
+            logger.warning("SO101RobotInterface.connect called but robot is already connected.")
             return
-        calibrate = os.environ.get("SO100_CALIBRATE", "false").lower() in {"1", "true", "yes"}
+        calibrate = os.environ.get("SO101_CALIBRATE", "false").lower() in {"1", "true", "yes"}
 
         requested_port = (self.config.port or "").strip()
         should_auto = requested_port.lower() in {"auto", "auto-detect", "autodetect", ""}
@@ -115,7 +115,7 @@ class SO100RobotInterface:
                 self._connected = False
 
         hint = (
-            "Set SO100_PORT=/dev/ttyACM0 (or your port), or set SO100_PORT=auto to auto-detect."
+            "Set SO101_PORT=/dev/ttyACM0 (or your port), or set SO101_PORT=auto to auto-detect."
         )
         perm_hint = ""
         if last_err is not None:
@@ -187,9 +187,9 @@ class SO100RobotInterface:
         self.robot.send_action(action)
 
 
-def make_robot_interface(cfg: SO100DemoConfig) -> SO100RobotInterface | MockRobotInterface:
+def make_robot_interface(cfg: SO101DemoConfig) -> SO101RobotInterface | MockRobotInterface:
     """
-    Factory that returns either a real SO100RobotInterface or a MockRobotInterface
+    Factory that returns either a real SO101RobotInterface or a MockRobotInterface
     depending on the configuration.
 
     This allows the rest of the demo (server, orchestrator) to be written against
@@ -199,4 +199,4 @@ def make_robot_interface(cfg: SO100DemoConfig) -> SO100RobotInterface | MockRobo
     if cfg.use_mock:
         return make_mock_robot_interface(cfg)
     robot_cfg: SO100FollowerConfig = cfg.to_robot_config()
-    return SO100RobotInterface(robot_cfg)
+    return SO101RobotInterface(robot_cfg)

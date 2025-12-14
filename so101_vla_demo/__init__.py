@@ -1,8 +1,8 @@
 """
-SO100 VLA Demo
+SO101 VLA Demo
 
 This package contains a minimal scaffold to:
-- connect to a SO100 follower arm via LeRobot
+- connect to a SO101 follower arm via LeRobot
 - stream camera + joint observations
 - wrap learned policies as "skills" (search_object, grasp_object)
 - orchestrate a simple search-then-grasp demo

@@ -6,9 +6,9 @@ from typing import Callable
 
 import numpy as np
 
-from .config import SO100DemoConfig
+from .config import SO101DemoConfig
 from .grasp_skill import GraspPolicySkill
-from .robot_interface import SO100RobotInterface
+from .robot_interface import SO101RobotInterface
 from .search_skill import SearchPolicySkill
 
 logger = logging.getLogger(__name__)
@@ -25,14 +25,14 @@ class SO100DemoOrchestrator:
     - use GraspPolicySkill to grasp it
     """
 
-    cfg: SO100DemoConfig
-    robot: SO100RobotInterface
+    cfg: SO101DemoConfig
+    robot: SO101RobotInterface
     search_skill: SearchPolicySkill
     grasp_skill: GraspPolicySkill
     detect_fn: DetectFn
 
     def run(self, object_name: str) -> None:
-        logger.info(f"Starting SO100 demo for object: {object_name}")
+        logger.info(f"Starting SO101 demo for object: {object_name}")
         self.robot.connect()
         try:
             # If no search policy is configured, skip search and go straight to grasp.

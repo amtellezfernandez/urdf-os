@@ -14,15 +14,15 @@ def _parse_camera_sources() -> List[int | Path]:
     Parse camera sources from environment variables (comma-separated).
 
     Supports:
-    - `SO100_CAMERA_SOURCES` (preferred): e.g. "0,2,/dev/video4"
-    - `SO100_CAMERA_INDEXES` (legacy plural): e.g. "0,2,4"
-    - `SO100_CAMERA_INDEX` (legacy singular): e.g. "6"
+    - `SO101_CAMERA_SOURCES` (preferred): e.g. "0,2,/dev/video4"
+    - `SO101_CAMERA_INDEXES` (legacy plural): e.g. "0,2,4"
+    - `SO101_CAMERA_INDEX` (legacy singular): e.g. "6"
     """
-    raw = os.environ.get("SO100_CAMERA_SOURCES")
+    raw = os.environ.get("SO101_CAMERA_SOURCES")
     if raw is None:
-        raw = os.environ.get("SO100_CAMERA_INDEXES")
+        raw = os.environ.get("SO101_CAMERA_INDEXES")
     if raw is None:
-        raw = os.environ.get("SO100_CAMERA_INDEX")
+        raw = os.environ.get("SO101_CAMERA_INDEX")
     if not raw:
         raw = "0"
 
@@ -40,7 +40,7 @@ def _parse_camera_sources() -> List[int | Path]:
 
 def _parse_camera_names() -> List[str]:
     """Parse camera names from environment variable (comma-separated)."""
-    raw = os.environ.get("SO100_CAMERA_NAMES", "wrist,overhead,side")
+    raw = os.environ.get("SO101_CAMERA_NAMES", "wrist,overhead,side")
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
@@ -71,27 +71,27 @@ def _parse_optional_str(env_name: str) -> str | None:
 
 
 @dataclass
-class SO100DemoConfig:
+class SO101DemoConfig:
     """
-    Basic configuration for the SO100 demo.
+    Basic configuration for the SO101 demo.
 
     Adjust the defaults or override via environment variables:
-    - SO100_PORT
-    - SO100_ROBOT_ID (must match calibration ID, e.g., "my_so100")
-    - SO100_CAMERA_SOURCES (comma-separated, e.g., "0,2,/dev/video4")
-      (also supports legacy SO100_CAMERA_INDEXES / SO100_CAMERA_INDEX)
-    - SO100_CAMERA_NAMES (comma-separated, e.g., "wrist,overhead,side")
+    - SO101_PORT
+    - SO101_ROBOT_ID (must match calibration ID, e.g., "my_so101")
+    - SO101_CAMERA_SOURCES (comma-separated, e.g., "0,2,/dev/video4")
+      (also supports legacy SO101_CAMERA_INDEXES / SO101_CAMERA_INDEX)
+    - SO101_CAMERA_NAMES (comma-separated, e.g., "wrist,overhead,side")
     """
 
-    port: str = os.environ.get("SO100_PORT", "/dev/ttyUSB0")
+    port: str = os.environ.get("SO101_PORT", "/dev/ttyUSB0")
     # Robot ID - must match the ID used during calibration
-    robot_id: Optional[str] = os.environ.get("SO100_ROBOT_ID")
+    robot_id: Optional[str] = os.environ.get("SO101_ROBOT_ID")
     # Multi-camera support: list of camera sources (OpenCV index int or device path Path)
     camera_indexes: List[int | Path] = field(default_factory=_parse_camera_sources)
     # Camera names corresponding to each index
     camera_names: List[str] = field(default_factory=_parse_camera_names)
     demo_fps: int = 15
-    # If True, use a local mock robot instead of real SO100 hardware.
+    # If True, use a local mock robot instead of real SO101 hardware.
     # This is useful for running the demo on any laptop / VM.
     use_mock: bool = os.environ.get("USE_MOCK_ROBOT", "false").lower() in {"1", "true", "yes"}
     # Optional sources for mock camera images.
@@ -100,10 +100,10 @@ class SO100DemoConfig:
     # In mock mode, optionally stream from real cameras instead of synthetic frames.
     use_real_cameras: bool = field(default_factory=_use_real_cameras)
     # Camera capture settings (leave unset to use each camera's defaults).
-    camera_width: int | None = field(default_factory=lambda: _parse_optional_int("SO100_CAMERA_WIDTH"))
-    camera_height: int | None = field(default_factory=lambda: _parse_optional_int("SO100_CAMERA_HEIGHT"))
-    camera_fps: int | None = field(default_factory=lambda: _parse_optional_int("SO100_CAMERA_FPS"))
-    camera_fourcc: str | None = field(default_factory=lambda: _parse_optional_str("SO100_CAMERA_FOURCC"))
+    camera_width: int | None = field(default_factory=lambda: _parse_optional_int("SO101_CAMERA_WIDTH"))
+    camera_height: int | None = field(default_factory=lambda: _parse_optional_int("SO101_CAMERA_HEIGHT"))
+    camera_fps: int | None = field(default_factory=lambda: _parse_optional_int("SO101_CAMERA_FPS"))
+    camera_fourcc: str | None = field(default_factory=lambda: _parse_optional_str("SO101_CAMERA_FOURCC"))
     # Optional path to a trained search policy checkpoint (local or HuggingFace repo_id)
     search_policy_path: Optional[str] = os.environ.get("SEARCH_POLICY_PATH")
     # Optional path to a trained grasp policy checkpoint (e.g. SmolVLA/XVLA, HuggingFace repo_id)

@@ -7,10 +7,10 @@ from typing import Any
 
 import numpy as np
 
-from .config import SO100DemoConfig
+from .config import SO101DemoConfig
 from .demo_orchestrator import SO100DemoOrchestrator
 from .grasp_skill import GraspPolicySkill
-from .robot_interface import SO100RobotInterface
+from .robot_interface import SO101RobotInterface
 from .search_skill import SearchPolicySkill
 
 
@@ -27,7 +27,7 @@ def simple_pixel_detector(frame: np.ndarray, object_name: str) -> bool:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="SO100 VLA search-and-grasp demo scaffold.")
+    parser = argparse.ArgumentParser(description="SO101 VLA search-and-grasp demo scaffold.")
     parser.add_argument("--object-name", type=str, default="tennis ball", help="Name of the object to search.")
     parser.add_argument(
         "--search-policy-path",
@@ -42,22 +42,22 @@ def parse_args() -> argparse.Namespace:
         help="Path to trained grasp policy `pretrained_model` directory.",
     )
     parser.add_argument(
-        "--so100-port",
+        "--so101-port",
         type=str,
         default=None,
-        help="Serial port for the SO100 follower arm. Overrides SO100_PORT env var.",
+        help="Serial port for the SO101 follower arm. Overrides SO101_PORT env var.",
     )
     parser.add_argument(
         "--camera-index",
         type=int,
         default=None,
-        help="OpenCV camera index for the wrist camera (single-camera). Overrides SO100_CAMERA_INDEX env var.",
+        help="OpenCV camera index for the wrist camera (single-camera). Overrides SO101_CAMERA_INDEX env var.",
     )
     parser.add_argument(
         "--camera-sources",
         type=str,
         default=None,
-        help="Comma-separated camera sources (e.g. '0,2,/dev/video4'). Overrides SO100_CAMERA_SOURCES env var.",
+        help="Comma-separated camera sources (e.g. '0,2,/dev/video4'). Overrides SO101_CAMERA_SOURCES env var.",
     )
     return parser.parse_args()
 
@@ -83,7 +83,7 @@ def main() -> None:
     elif args.camera_index is not None:
         cfg_kwargs["camera_indexes"] = [args.camera_index]
 
-    cfg = SO100DemoConfig(**cfg_kwargs)
+    cfg = SO101DemoConfig(**cfg_kwargs)
 
     if args.grasp_policy_path is None:
         logging.warning(
@@ -92,7 +92,7 @@ def main() -> None:
         )
 
     robot_cfg = cfg.to_robot_config()
-    robot = SO100RobotInterface(robot_cfg)
+    robot = SO101RobotInterface(robot_cfg)
 
     search_policy_path = Path(args.search_policy_path) if args.search_policy_path else None
     search_skill = SearchPolicySkill(policy_path=search_policy_path)

@@ -11,7 +11,7 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.processor import PolicyProcessorPipeline
 from lerobot.utils.constants import ACTION, OBS_STR
 
-from .robot_interface import SO100RobotInterface
+from .robot_interface import SO101RobotInterface
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class GraspPolicySkill:
 
     def run_grasp_loop(
         self,
-        robot: SO100RobotInterface,
+        robot: SO101RobotInterface,
         max_steps: int = 100,
     ) -> None:
         """

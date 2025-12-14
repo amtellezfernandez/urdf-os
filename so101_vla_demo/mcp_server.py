@@ -1,11 +1,11 @@
 """
-SO100 VLA MCP Server
+SO101 VLA MCP Server
 
 Exposes robot camera feeds and VLA skills as MCP tools,
 allowing Claude Code to directly control the robot.
 
 Usage:
-    python -m so100_vla_demo.mcp_server
+    python -m so101_vla_demo.mcp_server
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from lerobot.policies.factory import get_policy_class
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.factory import make_pre_post_processors
 
-from .config import SO100DemoConfig, _parse_camera_sources, _parse_camera_names
+from .config import SO101DemoConfig, _parse_camera_sources, _parse_camera_names
 from .robot_interface import make_robot_interface
 from .search_skill import SearchPolicySkill  # noqa: F401
 from .grasp_skill import GraspPolicySkill  # noqa: F401
@@ -54,7 +54,7 @@ def _as_pretrained_name_or_path(value: str | None) -> str | None:
 def _get_motor_names_from_robot_interface(robot_interface) -> list[str]:
     robot = getattr(robot_interface, "robot", None)
     if robot is None:
-        # MockRobotInterface case (or other wrappers): fall back to SO100 motor names.
+        # MockRobotInterface case (or other wrappers): fall back to SO101 motor names.
         return [
             "shoulder_pan",
             "shoulder_lift",
@@ -70,7 +70,7 @@ def _get_motor_names_from_robot_interface(robot_interface) -> list[str]:
     return []
 
 
-def _clamp_so100_action(motor: str, value: float) -> float:
+def _clamp_so101_action(motor: str, value: float) -> float:
     if motor == "gripper":
         return float(max(0.0, min(100.0, value)))
     return float(max(-100.0, min(100.0, value)))
@@ -193,13 +193,13 @@ class VLAPolicyRunner:
             raise RuntimeError(f"Action dim {len(action_vec)} < motors {len(motor_names)}")
         action_vec = action_vec[: len(motor_names)]
 
-        return {m: _clamp_so100_action(m, float(action_vec[i])) for i, m in enumerate(motor_names)}
+        return {m: _clamp_so101_action(m, float(action_vec[i])) for i, m in enumerate(motor_names)}
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize MCP server
-mcp = FastMCP("so100-vla-server")
+mcp = FastMCP("so101-vla-server")
 
 # =============================================================================
 # Global State
@@ -294,9 +294,9 @@ def _parse_policy_camera_map() -> dict[str, str]:
     Map policy camera names -> robot camera names.
 
     Example:
-      SO100_POLICY_CAMERA_MAP='{"front":"overhead","wrist":"wrist"}'
+      SO101_POLICY_CAMERA_MAP='{"front":"overhead","wrist":"wrist"}'
     """
-    raw = os.environ.get("SO100_POLICY_CAMERA_MAP", "").strip()
+    raw = os.environ.get("SO101_POLICY_CAMERA_MAP", "").strip()
     if not raw:
         return {"front": "overhead", "top": "overhead", "wrist": "wrist"}
     try:
@@ -386,7 +386,7 @@ def get_all_camera_frames() -> Dict[str, str]:
 @mcp.tool()
 def connect_robot(port: str = "auto") -> Dict[str, Any]:
     """
-    Connect to the SO100 robot arm.
+    Connect to the SO101 robot arm.
 
     Args:
         port: Serial port (e.g., "/dev/ttyUSB0"), "auto" to detect, or "mock" for safe mock mode.
@@ -402,21 +402,21 @@ def connect_robot(port: str = "auto") -> Dict[str, Any]:
     try:
         if port.strip().lower() == "mock":
             os.environ["USE_MOCK_ROBOT"] = "true"
-            cfg = SO100DemoConfig()
+            cfg = SO101DemoConfig()
             robot_state.robot_interface = make_robot_interface(cfg)
             robot_state.robot_interface.connect()
             robot_state.connected = True
             robot_state.motion_enabled = True
             return {"status": "connected", "port": "mock"}
 
-        # Let SO100RobotInterface handle discovery when asked.
+        # Let SO101RobotInterface handle discovery when asked.
         if port.strip().lower() in {"auto", "auto-detect", "autodetect"}:
-            os.environ["SO100_PORT"] = "auto"
+            os.environ["SO101_PORT"] = "auto"
         else:
-            os.environ["SO100_PORT"] = port
+            os.environ["SO101_PORT"] = port
         os.environ["USE_MOCK_ROBOT"] = "false"
 
-        cfg = SO100DemoConfig()
+        cfg = SO101DemoConfig()
         robot_state.robot_interface = make_robot_interface(cfg)
         robot_state.robot_interface.connect()
         robot_state.connected = True
@@ -428,8 +428,8 @@ def connect_robot(port: str = "auto") -> Dict[str, Any]:
         except Exception:  # noqa: BLE001
             connected_port = None
 
-        robot_state.motion_enabled = os.environ.get("SO100_ENABLE_MOTION", "false").lower() in {"1", "true", "yes"}
-        return {"status": "connected", "port": connected_port or os.environ.get("SO100_PORT", port)}
+        robot_state.motion_enabled = os.environ.get("SO101_ENABLE_MOTION", "false").lower() in {"1", "true", "yes"}
+        return {"status": "connected", "port": connected_port or os.environ.get("SO101_PORT", port)}
 
     except Exception as e:
         logger.error(f"Failed to connect robot: {e}")
@@ -445,7 +445,7 @@ def connect_robot(port: str = "auto") -> Dict[str, Any]:
 @mcp.tool()
 def disconnect_robot() -> Dict[str, Any]:
     """
-    Disconnect from the SO100 robot arm.
+    Disconnect from the SO101 robot arm.
 
     Returns:
         Disconnection status
@@ -578,7 +578,7 @@ def get_robot_camera_frame(camera_name: str = "wrist") -> Image:
 @mcp.tool()
 def list_serial_ports() -> List[Dict[str, str]]:
     """
-    List likely SO100 serial ports and their permissions (Linux).
+    List likely SO101 serial ports and their permissions (Linux).
 
     This helps debug connect failures (most commonly: user not in 'dialout').
     """
@@ -782,7 +782,7 @@ def start_skill(
     if not is_mock and not robot_state.motion_enabled:
         return {
             "status": "error",
-            "error": "Motion is disabled for safety. Call enable_motion(true) (or set SO100_ENABLE_MOTION=true) before start_skill().",
+            "error": "Motion is disabled for safety. Call enable_motion(true) (or set SO101_ENABLE_MOTION=true) before start_skill().",
         }
 
     # Create execution
@@ -895,7 +895,7 @@ def set_policy(policy_name: str, policy_id: str) -> Dict[str, Any]:
 
     Args:
         policy_name: "smolvla" or "xvla"
-        policy_id: Hugging Face repo id (e.g. "Gurkinator/smolvla_so100_policy") or local folder path.
+        policy_id: Hugging Face repo id (e.g. "Gurkinator/smolvla_so101_policy") or local folder path.
 
     Returns:
         Status (policy is loaded lazily on first use).
@@ -943,7 +943,7 @@ def main():
     """Run the MCP server."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="SO100 VLA MCP Server")
+    parser = argparse.ArgumentParser(description="SO101 VLA MCP Server")
     parser.add_argument(
         "--transport",
         choices=["stdio", "sse"],
@@ -963,7 +963,7 @@ def main():
     )
     args = parser.parse_args()
 
-    logger.info("Starting SO100 VLA MCP Server...")
+    logger.info("Starting SO101 VLA MCP Server...")
     logger.info(f"Cameras configured: {list(camera_state.camera_indexes.keys())}")
     logger.info(f"Transport: {args.transport}")
 

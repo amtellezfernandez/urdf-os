@@ -1,5 +1,5 @@
 """
-SO100 VLA MCP client demo (no Claude required).
+SO101 VLA MCP client demo (no Claude required).
 
 This script acts as an MCP client and exercises the same tools as the MCP server
 (via an in-process MCP transport for portability):
@@ -9,11 +9,11 @@ This script acts as an MCP client and exercises the same tools as the MCP server
 
 Examples:
   # Smoke test tools (no policy load)
-  /home/USER/miniconda3/envs/lerobot/bin/python -m so100_vla_demo.mcp_client_demo
+  /home/USER/miniconda3/envs/lerobot/bin/python -m so101_vla_demo.mcp_client_demo
 
   # Run a real checkpoint in mock-robot mode (downloads from Hugging Face if needed)
-  /home/USER/miniconda3/envs/lerobot/bin/python -m so100_vla_demo.mcp_client_demo \\
-    --policy Gurkinator/smolvla_so100_policy --steps 2
+  /home/USER/miniconda3/envs/lerobot/bin/python -m so101_vla_demo.mcp_client_demo \\
+    --policy Gurkinator/smolvla_so101_policy --steps 2
 """
 
 from __future__ import annotations
@@ -41,20 +41,20 @@ def _env_for_server(args: argparse.Namespace) -> dict[str, str]:
 
     # Cameras for the MCP server's camera tools (independent of robot_interface cameras).
     if args.camera_sources:
-        env["SO100_CAMERA_SOURCES"] = args.camera_sources
+        env["SO101_CAMERA_SOURCES"] = args.camera_sources
     if args.camera_names:
-        env["SO100_CAMERA_NAMES"] = args.camera_names
+        env["SO101_CAMERA_NAMES"] = args.camera_names
 
     # Robot connection. Default to mock to avoid moving hardware unexpectedly.
     env["USE_MOCK_ROBOT"] = "true" if args.robot == "mock" else "false"
     if args.port:
-        env["SO100_PORT"] = args.port
+        env["SO101_PORT"] = args.port
 
     # Optional policy configuration (can be overridden via set_policy tool too).
     if args.policy:
         env["SMOLVLA_POLICY_ID"] = args.policy
     if args.policy_camera_map:
-        env["SO100_POLICY_CAMERA_MAP"] = args.policy_camera_map
+        env["SO101_POLICY_CAMERA_MAP"] = args.policy_camera_map
 
     return env
 
@@ -202,9 +202,9 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="SO100 VLA MCP client demo")
+    parser = argparse.ArgumentParser(description="SO101 VLA MCP client demo")
     parser.add_argument("--robot", choices=["mock", "real"], default="mock", help="Connect to mock or real robot")
-    parser.add_argument("--port", default=None, help="Serial port for real robot (default: SO100_PORT env)")
+    parser.add_argument("--port", default=None, help="Serial port for real robot (default: SO101_PORT env)")
     parser.add_argument("--camera-sources", default=None, help='Comma-separated sources (e.g. "/dev/video4,/dev/video6" or "0,2")')
     parser.add_argument("--camera-names", default=None, help='Comma-separated names (e.g. "wrist,overhead")')
     parser.add_argument("--policy", default="", help="SmolVLA policy checkpoint (HF repo_id or local path)")
