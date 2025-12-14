@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -35,8 +36,8 @@ from lerobot.policies.factory import make_pre_post_processors
 
 from .config import SO100DemoConfig, _parse_camera_sources, _parse_camera_names
 from .robot_interface import make_robot_interface
-from .search_skill import SearchPolicySkill
-from .grasp_skill import GraspPolicySkill
+from .search_skill import SearchPolicySkill  # noqa: F401
+from .grasp_skill import GraspPolicySkill  # noqa: F401
 
 
 def _as_pretrained_name_or_path(value: str | None) -> str | None:
@@ -128,21 +129,24 @@ class VLAPolicyRunner:
                 raw_batch[OBS_IMAGE] = default_img
             elif key.startswith(f"{OBS_IMAGES}."):
                 cam = key.split(".", 2)[2]  # observation.images.<cam>
+                cam_map = _parse_policy_camera_map()
+                mapped = cam_map.get(cam, cam)
+
                 # Best-effort aliasing between common camera names.
-                candidates = [cam]
-                if cam in {"front", "top"}:
+                candidates = [mapped, cam]
+                if cam in {"front", "top"} or mapped in {"front", "top"}:
                     candidates.extend(["overhead", "side", "wrist"])
-                elif cam in {"overhead"}:
+                elif cam in {"overhead"} or mapped in {"overhead"}:
                     candidates.extend(["front", "top"])
-                elif cam in {"agentview"}:
+                elif cam in {"agentview"} or mapped in {"agentview"}:
                     candidates.extend(["front", "overhead"])
 
-                chosen = None
                 for c in candidates:
                     if c in images:
-                        chosen = images[c]
+                        raw_batch[key] = images[c]
                         break
-                raw_batch[key] = chosen if chosen is not None else default_img
+                else:
+                    raw_batch[key] = default_img
 
         # Backward-compat: if the config didn't list an image key, still provide one.
         raw_batch.setdefault(OBS_IMAGE, default_img)
@@ -245,14 +249,34 @@ _grasp_policy_path = _as_pretrained_name_or_path(os.environ.get("GRASP_POLICY_PA
 _smolvla_policy_id = _as_pretrained_name_or_path(os.environ.get("SMOLVLA_POLICY_ID"))
 _xvla_policy_id = _as_pretrained_name_or_path(os.environ.get("XVLA_POLICY_ID"))
 
-search_skill = SearchPolicySkill(policy_path=Path(_search_policy_path) if _search_policy_path else None)
-grasp_skill = GraspPolicySkill(policy_path=Path(_grasp_policy_path) if _grasp_policy_path else Path("MISSING"))
-
 policy_runners: Dict[str, VLAPolicyRunner] = {}
 if _smolvla_policy_id:
     policy_runners["smolvla"] = VLAPolicyRunner(policy_id=_smolvla_policy_id)
 if _xvla_policy_id:
     policy_runners["xvla"] = VLAPolicyRunner(policy_id=_xvla_policy_id)
+
+
+def _parse_policy_camera_map() -> dict[str, str]:
+    """
+    Map policy camera names -> robot camera names.
+
+    Example:
+      SO100_POLICY_CAMERA_MAP='{"front":"overhead","wrist":"wrist"}'
+    """
+    raw = os.environ.get("SO100_POLICY_CAMERA_MAP", "").strip()
+    if not raw:
+        return {"front": "overhead", "top": "overhead", "wrist": "wrist"}
+    try:
+        data = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return {"front": "overhead", "top": "overhead", "wrist": "wrist"}
+    if not isinstance(data, dict):
+        return {"front": "overhead", "top": "overhead", "wrist": "wrist"}
+    result: dict[str, str] = {}
+    for k, v in data.items():
+        if isinstance(k, str) and isinstance(v, str) and k and v:
+            result[k] = v
+    return result
 
 # =============================================================================
 # Camera Tools
@@ -440,18 +464,6 @@ def list_skills() -> List[Dict[str, str]]:
             "policy_id": os.environ.get("XVLA_POLICY_ID", ""),
         },
         {
-            "name": "grasp",
-            "description": "Grasp an object using trained VLA policy (SmolVLA). "
-                          "The robot will approach and grasp the target object.",
-            "requires_policy": True
-        },
-        {
-            "name": "search",
-            "description": "Search for an object by panning the camera. "
-                          "The robot will move to scan the workspace.",
-            "requires_policy": True
-        },
-        {
             "name": "home",
             "description": "Move robot to home position. No policy required.",
             "requires_policy": False
@@ -523,31 +535,6 @@ def _run_skill_loop(execution: SkillExecution):
             execution.status = "completed"
             return
 
-        if execution.skill_name == "search":
-            if search_skill.policy_path is None:
-                execution.status = "error"
-                execution.error = "SEARCH_POLICY_PATH not set"
-                return
-            found, steps = search_skill.run_search_loop(
-                robot=robot,
-                object_name=getattr(execution, "target_object", "object"),
-                detect_fn=lambda frame, obj: False,  # Replace with VLM detector if available
-                max_steps=execution.max_steps,
-            )
-            execution.steps_completed = steps
-            execution.status = "completed" if found else "completed"
-            return
-
-        if execution.skill_name == "grasp":
-            if not grasp_skill.policy_path.exists():
-                execution.status = "error"
-                execution.error = "GRASP_POLICY_PATH not set or missing"
-                return
-            grasp_skill.run_grasp_loop(robot=robot, max_steps=execution.max_steps)
-            execution.steps_completed = execution.max_steps
-            execution.status = "completed"
-            return
-
         execution.status = "error"
         execution.error = f"Unknown skill {execution.skill_name}"
 
@@ -576,7 +563,7 @@ def start_skill(
         Skill execution ID and initial status. Use get_skill_status() to monitor.
     """
     # Validate skill name
-    valid_skills = ["grasp", "search", "home", "smolvla", "xvla"]
+    valid_skills = ["home", "smolvla", "xvla"]
     if skill_name not in valid_skills:
         return {"status": "error", "error": f"Unknown skill: {skill_name}. Valid: {valid_skills}"}
 

@@ -285,6 +285,74 @@ Later you can extend this further (see below).
 
 ---
 
+## MCP Skills (No API Key Needed)
+
+If you don’t have an LLM/VLM API key, you can still do **agentic control** by running an MCP server and letting
+Claude Code (or another MCP client) call tools:
+
+- camera tools: `list_cameras`, `get_camera_frame`
+- robot tools: `connect_robot`, `get_robot_state`
+- skill tools: `start_skill("smolvla"| "xvla", instruction="...")`, `stop_skill`, `get_skill_status`
+
+### Adding a Policy Checkpoint (Easy / For Any Repo User)
+
+You don’t need to edit code. A checkpoint can be either:
+- a Hugging Face model repo id (recommended), or
+- a local folder path.
+
+**Requirement:** for language VLA skills we need a *LeRobot-exported* checkpoint that includes processor + stats
+files (not only `config.json` and `model.safetensors`).
+
+Minimum expected files:
+- `config.json`
+- `model.safetensors`
+- `policy_preprocessor.json`
+- `policy_postprocessor.json`
+- `policy_preprocessor_step_*_normalizer_processor.safetensors`
+- `policy_postprocessor_step_*_unnormalizer_processor.safetensors`
+
+#### Option A: Use environment variables (simplest)
+
+Example (public SmolVLA checkpoint for SO100):
+
+```bash
+export SMOLVLA_POLICY_ID="Gurkinator/smolvla_so100_policy"
+```
+
+If your policy expects camera names like `front` but your robot uses `overhead`, set:
+
+```bash
+export SO100_POLICY_CAMERA_MAP='{"front":"overhead","wrist":"wrist"}'
+```
+
+#### Option B: Set it at runtime via MCP tool
+
+Call the tool:
+
+```text
+set_policy(policy_name="smolvla", policy_id="Gurkinator/smolvla_so100_policy")
+```
+
+### Run MCP Server
+
+```bash
+python -m so100_vla_demo.mcp_server
+```
+
+### Example MCP “See → Act” flow (from the client)
+
+1) See:
+- `list_cameras()`
+- `get_camera_frame("wrist")`
+
+2) Connect:
+- `connect_robot("auto")` (or pass a specific port)
+
+3) Act (language instruction):
+- `start_skill("smolvla", instruction="pick up the blue block", max_steps=80)`
+- `get_skill_status(skill_id)`
+- `stop_skill(skill_id)` if you want to interrupt/replan
+
 ## How to Use This Scaffold (Step‑by‑Step)
 
 ### 1. Connect SO100 and test camera manually
