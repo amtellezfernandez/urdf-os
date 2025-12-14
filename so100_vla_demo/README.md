@@ -1,5 +1,114 @@
 # SO100 VLA Demo Scaffold
 
+## Quick Start (Team Member Setup)
+
+### 1. Clone and Install
+
+```bash
+git clone <repo-url>
+cd urdf-os
+
+# Create conda environment
+conda create -n lerobot python=3.10 -y
+conda activate lerobot
+
+# Install dependencies
+pip install -e ./src
+pip install fastmcp opencv-python pillow torch
+```
+
+### 2. Hardware Permissions (Linux)
+
+```bash
+# Add user to required groups
+sudo usermod -a -G dialout,video $USER
+# Log out and back in for changes to take effect
+```
+
+### 3. Run the Web UI (Camera Streaming)
+
+```bash
+# Find your cameras first
+lerobot-find-cameras opencv
+
+# Start server (adjust camera sources based on above)
+USE_MOCK_ROBOT=true \
+USE_REAL_CAMERAS=true \
+SO100_CAMERA_SOURCES="/dev/video4,/dev/video6" \
+SO100_CAMERA_NAMES="wrist,overhead" \
+python -m so100_vla_demo.demo_script
+```
+
+Open http://localhost:8000/static/index.html → Click **Connect** to see cameras.
+
+To use the **real robot arm** (not mock):
+```bash
+USE_MOCK_ROBOT=false \
+SO100_PORT=/dev/ttyACM0 \
+SO100_CAMERA_SOURCES="/dev/video4,/dev/video6" \
+SO100_CAMERA_NAMES="wrist,overhead" \
+python -m so100_vla_demo.demo_script
+```
+
+### 4. Run MCP Server (AI Controls Robot via Claude Code)
+
+**Step 1:** Configure `.mcp.json` in repo root (update paths for YOUR machine):
+```bash
+# Find your values:
+which python                    # → e.g. /home/USER/miniconda3/envs/lerobot/bin/python
+pwd                             # → e.g. /home/USER/urdf-os
+lerobot-find-cameras opencv     # → e.g. /dev/video4, /dev/video6
+ls /dev/ttyACM* /dev/ttyUSB*    # → e.g. /dev/ttyACM0
+```
+
+Then edit `.mcp.json`:
+```json
+{
+  "mcpServers": {
+    "so100-vla": {
+      "command": "/home/USER/miniconda3/envs/lerobot/bin/python",
+      "args": ["-m", "so100_vla_demo.mcp_server"],
+      "cwd": "/home/USER/urdf-os",
+      "env": {
+        "PYTHONPATH": "/home/USER/urdf-os/src",
+        "SO100_CAMERA_SOURCES": "/dev/video4,/dev/video6",
+        "SO100_CAMERA_NAMES": "wrist,overhead",
+        "SO100_PORT": "/dev/ttyACM0",
+        "SMOLVLA_POLICY_ID": "Gurkinator/smolvla_so100_policy"
+      }
+    }
+  }
+}
+```
+Replace `/home/USER/...` with your actual paths.
+
+**Step 2:** Restart Claude Code (it auto-loads MCP servers from `.mcp.json`)
+
+**Step 3:** Claude Code can now control the robot:
+```
+# See cameras
+list_cameras()
+get_camera_frame("wrist")
+
+# Connect robot
+connect_robot("auto")  # or connect_robot("mock") for safe testing
+
+# Run VLA skill with natural language
+start_skill("smolvla", instruction="pick up the red cup")
+get_skill_status("skill_xxx")
+stop_skill("skill_xxx")  # interrupt if needed
+```
+
+### 5. Demo Flow (AI Agent Controlling Robot)
+
+1. **Claude Code sees** → `get_camera_frame("wrist")`
+2. **Claude Code thinks** → "I see a red cup on the table"
+3. **Claude Code acts** → `start_skill("smolvla", instruction="pick up the red cup")`
+4. **Claude Code monitors** → `get_skill_status(...)` + `get_camera_frame("wrist")`
+5. **Claude Code stops/replans** → `stop_skill(...)` if needed
+
+---
+
 This folder contains a **self‑contained scaffold** for a LeRobot hackathon demo with the SO100 arm:
 
 - Use LeRobot’s `SO100Follower` to talk directly to the arm (no DDS/ROS).
@@ -335,9 +444,25 @@ set_policy(policy_name="smolvla", policy_id="Gurkinator/smolvla_so100_policy")
 
 ### Run MCP Server
 
+**Option A: For Claude Code (stdio transport)**
 ```bash
 python -m so100_vla_demo.mcp_server
 ```
+Configure via `.mcp.json` (see Quick Start above).
+
+**Option B: As HTTP server for any AI client (SSE transport)**
+```bash
+# Set environment first
+export PYTHONPATH=/path/to/urdf-os/src
+export SO100_CAMERA_SOURCES="/dev/video4,/dev/video6"
+export SO100_CAMERA_NAMES="wrist,overhead"
+export SO100_PORT="/dev/ttyACM0"
+export SMOLVLA_POLICY_ID="Gurkinator/smolvla_so100_policy"
+
+# Run as HTTP server
+python -m so100_vla_demo.mcp_server --transport sse --host 0.0.0.0 --port 8765
+```
+Clients connect to: `http://localhost:8765/sse`
 
 ### Example MCP “See → Act” flow (from the client)
 

@@ -31,6 +31,8 @@ from fastmcp.utilities.types import Image
 import torch
 
 from lerobot.utils.constants import ACTION, OBS_IMAGE, OBS_IMAGES, OBS_STATE
+from lerobot.configs.policies import PreTrainedConfig
+from lerobot.policies.factory import get_policy_class
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.factory import make_pre_post_processors
 
@@ -50,7 +52,15 @@ def _as_pretrained_name_or_path(value: str | None) -> str | None:
 def _get_motor_names_from_robot_interface(robot_interface) -> list[str]:
     robot = getattr(robot_interface, "robot", None)
     if robot is None:
-        return []
+        # MockRobotInterface case (or other wrappers): fall back to SO100 motor names.
+        return [
+            "shoulder_pan",
+            "shoulder_lift",
+            "elbow_flex",
+            "wrist_flex",
+            "wrist_roll",
+            "gripper",
+        ]
     bus = getattr(robot, "bus", None)
     motors = getattr(bus, "motors", None)
     if isinstance(motors, dict):
@@ -62,6 +72,19 @@ def _clamp_so100_action(motor: str, value: float) -> float:
     if motor == "gripper":
         return float(max(0.0, min(100.0, value)))
     return float(max(-100.0, min(100.0, value)))
+
+
+def _hwc_rgb_to_chw(image: np.ndarray) -> np.ndarray:
+    """
+    Convert an RGB image from HWC uint8 to CHW uint8.
+    """
+    if not isinstance(image, np.ndarray):
+        raise TypeError("image must be a numpy array")
+    if image.ndim != 3 or image.shape[-1] != 3:
+        raise ValueError(f"expected HxWx3 image, got shape={getattr(image, 'shape', None)}")
+    if image.dtype != np.uint8:
+        image = np.clip(image, 0, 255).astype(np.uint8)
+    return np.transpose(image, (2, 0, 1))
 
 
 @dataclass
@@ -81,16 +104,21 @@ class VLAPolicyRunner:
     postprocessor: Any | None = None
 
     def load(self) -> None:
-        self.policy = PreTrainedPolicy.from_pretrained(self.policy_id)
+        cfg = PreTrainedConfig.from_pretrained(self.policy_id)
+        policy_cls = get_policy_class(cfg.type)
+        self.policy = policy_cls.from_pretrained(self.policy_id, config=cfg)
         try:
+            device = getattr(self.policy.config, "device", "cpu")
             self.preprocessor, self.postprocessor = make_pre_post_processors(
                 policy_cfg=self.policy.config,
                 pretrained_path=self.policy_id,
+                preprocessor_overrides={"device_processor": {"device": device}},
+                postprocessor_overrides={"device_processor": {"device": "cpu"}},
             )
         except Exception as e:  # noqa: BLE001
             raise RuntimeError(
                 f"Checkpoint '{self.policy_id}' is missing processor files (policy_preprocessor.json / "
-                f"policy_postprocessor.json) or stats. Use a LeRobot-exported checkpoint."
+                f"policy_postprocessor.json) or needs processor overrides (device mismatch). Underlying error: {e}"
             ) from e
 
     def ensure_loaded(self) -> None:
@@ -110,7 +138,7 @@ class VLAPolicyRunner:
 
         state = np.asarray([float(joints.get(m, 0.0)) for m in motor_names], dtype=np.float32)
 
-        # Pick a default image for fallbacks.
+        # Pick a default image for fallbacks (HWC RGB).
         default_img = None
         if "wrist" in images:
             default_img = images["wrist"]
@@ -119,6 +147,8 @@ class VLAPolicyRunner:
         if default_img is None:
             raise RuntimeError("No camera images provided")
 
+        default_img_chw = _hwc_rgb_to_chw(default_img)
+
         raw_batch: Dict[str, Any] = {"task": instruction, OBS_STATE: state}
 
         # Provide images matching the policy's expected input feature keys.
@@ -126,7 +156,7 @@ class VLAPolicyRunner:
         expected_inputs = getattr(self.policy.config, "input_features", {}) or {}
         for key in expected_inputs.keys():
             if key == OBS_IMAGE:
-                raw_batch[OBS_IMAGE] = default_img
+                raw_batch[OBS_IMAGE] = default_img_chw
             elif key.startswith(f"{OBS_IMAGES}."):
                 cam = key.split(".", 2)[2]  # observation.images.<cam>
                 cam_map = _parse_policy_camera_map()
@@ -141,18 +171,18 @@ class VLAPolicyRunner:
                 elif cam in {"agentview"} or mapped in {"agentview"}:
                     candidates.extend(["front", "overhead"])
 
+                selected = None
                 for c in candidates:
                     if c in images:
-                        raw_batch[key] = images[c]
+                        selected = images[c]
                         break
-                else:
-                    raw_batch[key] = default_img
+                raw_batch[key] = _hwc_rgb_to_chw(selected) if selected is not None else default_img_chw
 
         # Backward-compat: if the config didn't list an image key, still provide one.
-        raw_batch.setdefault(OBS_IMAGE, default_img)
+        raw_batch.setdefault(OBS_IMAGE, default_img_chw)
 
         processed_batch = self.preprocessor(raw_batch)
-        with self.policy.no_grad():
+        with torch.no_grad():
             action: torch.Tensor = self.policy.select_action(processed_batch)
         action = self.postprocessor(action)
 
@@ -356,7 +386,7 @@ def connect_robot(port: str = "auto") -> Dict[str, Any]:
     Connect to the SO100 robot arm.
 
     Args:
-        port: Serial port (e.g., "/dev/ttyUSB0") or "auto" to detect
+        port: Serial port (e.g., "/dev/ttyUSB0"), "auto" to detect, or "mock" for safe mock mode.
 
     Returns:
         Connection status and robot info
@@ -367,6 +397,14 @@ def connect_robot(port: str = "auto") -> Dict[str, Any]:
         return {"status": "already_connected", "port": port}
 
     try:
+        if port.strip().lower() == "mock":
+            os.environ["USE_MOCK_ROBOT"] = "true"
+            cfg = SO100DemoConfig()
+            robot_state.robot_interface = make_robot_interface(cfg)
+            robot_state.robot_interface.connect()
+            robot_state.connected = True
+            return {"status": "connected", "port": "mock"}
+
         # Auto-detect port if needed
         if port == "auto":
             for try_port in ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1"]:
@@ -705,13 +743,38 @@ def set_policy(policy_name: str, policy_id: str) -> Dict[str, Any]:
 
 def main():
     """Run the MCP server."""
-    import sys
+    import argparse
+
+    parser = argparse.ArgumentParser(description="SO100 VLA MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse"],
+        default="stdio",
+        help="Transport mode: 'stdio' for Claude Code, 'sse' for HTTP server (default: stdio)"
+    )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Host for SSE server (default: 0.0.0.0)"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="Port for SSE server (default: 8765)"
+    )
+    args = parser.parse_args()
 
     logger.info("Starting SO100 VLA MCP Server...")
     logger.info(f"Cameras configured: {list(camera_state.camera_indexes.keys())}")
+    logger.info(f"Transport: {args.transport}")
 
-    # Run with stdio transport (default for Claude Code)
-    mcp.run(transport="stdio")
+    if args.transport == "sse":
+        logger.info(f"SSE server running on http://{args.host}:{args.port}/sse")
+        mcp.run(transport="sse", host=args.host, port=args.port)
+    else:
+        # stdio transport for Claude Code integration
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
