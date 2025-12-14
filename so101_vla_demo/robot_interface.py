@@ -70,13 +70,28 @@ class SO101RobotInterface:
 
         requested_port = (self.config.port or "").strip()
         should_auto = requested_port.lower() in {"auto", "auto-detect", "autodetect", ""}
-        port_exists = bool(requested_port) and Path(requested_port).exists()
 
+        # Build a prioritized list of ports to try:
+        # 1) user-provided comma-separated list (SO101_PORT)
+        # 2) auto-discovered serial ports (if env is "auto" or empty)
         ports_to_try: list[str] = []
-        if not should_auto:
-            ports_to_try.append(requested_port)
-        if should_auto or not port_exists:
+        if requested_port and not should_auto:
+            for token in requested_port.split(","):
+                token = token.strip()
+                if token:
+                    ports_to_try.append(token)
+        else:
             ports_to_try.extend(_discover_serial_ports())
+
+        # De-dupe while preserving order
+        seen: set[str] = set()
+        ports_to_try = [p for p in ports_to_try if not (p in seen or seen.add(p))]
+
+        if not ports_to_try:
+            raise RuntimeError(
+                "No robot port configured. Set SO101_PORT to the follower device path "
+                "or use 'auto' to try discovered ports."
+            )
 
         last_err: Exception | None = None
         for port in ports_to_try:
@@ -114,7 +129,8 @@ class SO101RobotInterface:
                 self._connected = False
 
         hint = (
-            "Set SO101_PORT=/dev/ttyACM0 (or your port), or set SO101_PORT=auto to auto-detect."
+            "Set SO101_PORT to your follower device path (e.g., /dev/ttyACM0) or a comma-separated list to try. "
+            "You can also set SO101_PORT=auto to use discovered serial devices."
         )
         perm_hint = ""
         if last_err is not None:

@@ -46,7 +46,7 @@ def _env_for_server(args: argparse.Namespace) -> dict[str, str]:
         env["SO101_CAMERA_NAMES"] = args.camera_names
 
     # Robot connection. Default to mock to avoid moving hardware unexpectedly.
-    env["USE_MOCK_ROBOT"] = "true" if args.robot == "mock" else "false"
+    env["USE_MOCK_ROBOT"] = "false"
     if args.port:
         env["SO101_PORT"] = args.port
 
@@ -159,9 +159,8 @@ async def _run(args: argparse.Namespace) -> int:
             report["saved_frame_ok"] = _save_first_image_result(frame_result, frame_path)
 
             report["connect_robot"] = _tool_result_to_value(
-                await client.call_tool("connect_robot", {"port": "mock" if args.robot == "mock" else "auto"})
+                await client.call_tool("connect_robot", {})
             )
-            report["robot_state"] = _tool_result_to_value(await client.call_tool("get_robot_state"))
             report["skills"] = _tool_result_to_value(await client.call_tool("list_skills"))
 
             if args.policy:
@@ -203,7 +202,6 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="SO101 VLA MCP client demo")
-    parser.add_argument("--robot", choices=["mock", "real"], default="mock", help="Connect to mock or real robot")
     parser.add_argument("--port", default=None, help="Serial port for real robot (default: SO101_PORT env)")
     parser.add_argument("--camera-sources", default=None, help='Comma-separated sources (e.g. "/dev/video4,/dev/video6" or "0,2")')
     parser.add_argument("--camera-names", default=None, help='Comma-separated names (e.g. "wrist,overhead")')

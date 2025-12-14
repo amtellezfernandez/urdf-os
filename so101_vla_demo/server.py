@@ -31,6 +31,7 @@ import base64
 import json
 import logging
 import os
+import tempfile
 import time
 from io import BytesIO
 from pathlib import Path
@@ -121,6 +122,11 @@ teleop_device_current: "Teleoperator | None" = None
 teleop_started_at: float | None = None
 teleop_error: str | None = None
 teleop_process_lock = asyncio.Lock()
+# Eval subprocess state
+eval_process: asyncio.subprocess.Process | None = None
+eval_process_cmd: list[str] = []
+eval_started_at: float | None = None
+eval_lock = asyncio.Lock()
 
 # Device config / calibration discovery
 DEVICE_PORTS_FILE = HF_LEROBOT_CALIBRATION / "device_ports.json"
@@ -134,10 +140,10 @@ class DevicePortUpdate(BaseModel):
 
 
 class TeleopStartRequest(BaseModel):
-    teleop_id: str | None = None
-    robot_id: str | None = None
-    teleop_port: str | None = None
-    robot_port: str | None = None
+    teleop_id: str | None = None  # ignored, env-driven
+    robot_id: str | None = None   # ignored, env-driven
+    teleop_port: str | None = None  # ignored, env-driven
+    robot_port: str | None = None   # ignored, env-driven
     teleop_type: str = "so101_leader"
     robot_type: str = "so101_follower"
     fps: int = 60
@@ -183,10 +189,24 @@ def _build_cameras_flag_from_env() -> str | None:
 
 
 def _get_env_teleop_defaults() -> Dict[str, Any]:
+    teleop_id = os.environ.get("SO101_LEADER_ID")
+    teleop_port = os.environ.get("SO101_LEADER_PORT")
+    teleop_available = bool(teleop_id and teleop_port)
+    unavailable_reason = None
+    if not teleop_available:
+        if not teleop_id and not teleop_port:
+            unavailable_reason = "leader_id_and_port_missing"
+        elif not teleop_id:
+            unavailable_reason = "leader_id_missing"
+        elif not teleop_port:
+            unavailable_reason = "leader_port_missing"
+
     return {
-        "teleop_id": os.environ.get("SO101_LEADER_ID"),
-        "teleop_port": os.environ.get("SO101_LEADER_PORT"),
+        "teleop_id": teleop_id,
+        "teleop_port": teleop_port,
         "teleop_type": "so101_leader",
+        "teleop_available": teleop_available,
+        "teleop_unavailable_reason": unavailable_reason,
         "robot_id": os.environ.get("SO101_ROBOT_ID"),
         "robot_port": os.environ.get("SO101_PORT"),
         "robot_type": "so101_follower",
@@ -395,6 +415,35 @@ def _encode_images(images: Dict[str, np.ndarray]) -> Dict[str, Dict[str, Any]]:
     return cameras_data
 
 
+async def _pipe_subprocess_output(proc: asyncio.subprocess.Process, name: str) -> None:
+    """
+    Drain stdout/stderr of a subprocess to avoid blocking and emit to logger.
+    """
+    assert proc.stdout is not None and proc.stderr is not None
+
+    async def _reader(stream: asyncio.StreamReader, log_fn) -> None:
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            try:
+                decoded = line.decode("utf-8", errors="replace").rstrip()
+            except Exception:
+                decoded = str(line)
+            log_fn("%s | %s", name, decoded)
+            # Surface subprocess output in the UI reasoning log so users can
+            # see the same messages as the terminal (e.g., loading, warnings).
+            try:
+                await manager.broadcast_json({"type": "reasoning", "thought": f"[{name}] {decoded}"})
+            except Exception as e:  # noqa: BLE001
+                logger.debug("Failed to broadcast %s output: %s", name, e)
+
+    await asyncio.gather(
+        _reader(proc.stdout, logger.info),
+        _reader(proc.stderr, logger.error),
+    )
+
+
 async def _teleop_loop(teleop: Teleoperator, fps: int, display_data: bool) -> None:
     """
     In-process teleop loop that shares the robot/cameras with the server to avoid port contention.
@@ -470,6 +519,11 @@ async def _stop_streaming(disconnect_robot: bool = False) -> None:
 async def _start_streaming() -> None:
     """Start camera streaming if teleop is not running."""
     global streaming, stream_task
+    if _is_eval_running():
+        await manager.broadcast_json(
+            {"type": "status", "phase": "idle", "text": "streaming_blocked_eval_running"}
+        )
+        return
     if teleop_task is not None and not teleop_task.done():
         return
     if streaming:
@@ -488,6 +542,9 @@ async def _stop_teleop(disconnect_robot: bool = True) -> None:
             await teleop_task
         except asyncio.CancelledError:
             pass
+        except Exception as e:  # noqa: BLE001
+            # Swallow any teleop task error so shutdown doesn't block eval/other flows.
+            logger.warning("Teleop task ended with error during stop: %s", e)
     teleop_task = None
     teleop_device_current = None
     teleop_started_at = None
@@ -501,6 +558,10 @@ async def _stop_teleop(disconnect_robot: bool = True) -> None:
 
 def _is_mock_robot() -> bool:
     return False
+
+
+def _is_eval_running() -> bool:
+    return eval_process is not None and eval_process.returncode is None
 
 
 async def _mock_search_and_grasp(object_name: str) -> None:
@@ -804,13 +865,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     "start stream",
                     "start_stream",
                 }:
-                    if not streaming:
-                        streaming = True
-                        if teleop_task is None:
-                            stream_task = asyncio.create_task(camera_stream_loop())
-                    await websocket.send_json(
-                        {"type": "status", "text": "streaming_started", "phase": "streaming"}
-                    )
+                    if _is_eval_running():
+                        await websocket.send_json(
+                            {"type": "status", "text": "streaming_blocked_eval_running", "phase": "idle"}
+                        )
+                    else:
+                        if not streaming:
+                            streaming = True
+                            if teleop_task is None:
+                                stream_task = asyncio.create_task(camera_stream_loop())
+                        await websocket.send_json(
+                            {"type": "status", "text": "streaming_started", "phase": "streaming"}
+                        )
                     continue
 
                 if normalized in {
@@ -881,12 +947,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             elif mtype == "command":
                 action = data.get("action")
                 if action == "start_stream":
-                    if not streaming:
-                        streaming = True
-                        stream_task = asyncio.create_task(camera_stream_loop())
-                    await websocket.send_json(
-                        {"type": "status", "text": "streaming_started", "phase": "streaming"}
-                    )
+                    if _is_eval_running():
+                        await websocket.send_json(
+                            {"type": "status", "text": "streaming_blocked_eval_running", "phase": "idle"}
+                        )
+                    else:
+                        if not streaming:
+                            streaming = True
+                            stream_task = asyncio.create_task(camera_stream_loop())
+                        await websocket.send_json(
+                            {"type": "status", "text": "streaming_started", "phase": "streaming"}
+                        )
                 elif action == "stop_stream":
                     streaming = False
                     if stream_task is not None:
@@ -970,12 +1041,26 @@ async def set_device_port(update: DevicePortUpdate) -> Dict[str, Any]:
 
 @app.get("/api/teleop/status")
 async def teleop_status() -> Dict[str, Any]:
+    defaults = _get_env_teleop_defaults()
     running = teleop_task is not None and not teleop_task.done()
     return {
         "running": running,
         "started_at": teleop_started_at,
         "teleop_id": getattr(teleop_device_current, "id", None),
         "error": teleop_error,
+        "teleop_available": defaults["teleop_available"],
+        "teleop_unavailable_reason": defaults["teleop_unavailable_reason"],
+    }
+
+
+@app.get("/api/eval_vla/status")
+async def eval_vla_status() -> Dict[str, Any]:
+    running = eval_process is not None and eval_process.returncode is None
+    return {
+        "running": running,
+        "started_at": eval_started_at,
+        "cmd": eval_process_cmd,
+        "returncode": eval_process.returncode if eval_process else None,
     }
 
 
@@ -994,24 +1079,14 @@ async def start_teleop(req: TeleopStartRequest) -> Dict[str, Any]:
         await _stop_streaming(disconnect_robot=True)
         await _stop_teleop(disconnect_robot=True)
 
-        env_teleop_port = os.environ.get("SO101_LEADER_PORT")
-        env_robot_port = os.environ.get("SO101_PORT")
-        env_teleop_id = os.environ.get("SO101_LEADER_ID")
-        env_robot_id = os.environ.get("SO101_ROBOT_ID")
-
-        stored_ports = _load_device_ports()
-        teleop_id = req.teleop_id or env_teleop_id
-        robot_id = req.robot_id or env_robot_id
-        teleop_port = (
-            req.teleop_port
-            or env_teleop_port
-            or stored_ports.get("teleop", {}).get(req.teleop_type, {}).get(teleop_id)
-        )
-        robot_port = (
-            req.robot_port
-            or env_robot_port
-            or stored_ports.get("robot", {}).get(req.robot_type, {}).get(robot_id)
-        )
+        env_defaults = _get_env_teleop_defaults()
+        if not env_defaults["teleop_available"]:
+            reason = env_defaults["teleop_unavailable_reason"] or "leader_not_configured"
+            raise HTTPException(status_code=400, detail=f"Teleop unavailable: {reason}")
+        teleop_id = env_defaults["teleop_id"]
+        robot_id = env_defaults["robot_id"]
+        teleop_port = env_defaults["teleop_port"]
+        robot_port = env_defaults["robot_port"]
         if not teleop_id:
             raise HTTPException(
                 status_code=400,
@@ -1050,6 +1125,114 @@ async def stop_teleop() -> Dict[str, Any]:
         await _stop_teleop(disconnect_robot=True)
         await _start_streaming()
     return {"ok": True}
+
+
+@app.post("/api/eval_vla/start")
+async def start_eval_vla() -> Dict[str, Any]:
+    global eval_process, eval_process_cmd, eval_started_at
+    async with eval_lock:
+        if eval_process is not None and eval_process.returncode is None:
+            raise HTTPException(status_code=400, detail="Eval VLA already running.")
+
+        # Ensure nothing else is holding the robot/camera devices (teleop or streaming).
+        # IMPORTANT: Stop streaming FIRST (without disconnecting) so the stream loop
+        # finishes before we disconnect the robot. Then stop teleop and disconnect.
+        await manager.broadcast_json(
+            {"type": "status", "phase": "idle", "text": "streaming_stopped_for_eval"}
+        )
+        await _stop_streaming(disconnect_robot=False)
+        await _stop_teleop(disconnect_robot=True)
+
+        env_defaults = _get_env_teleop_defaults()
+        robot_port = env_defaults["robot_port"]
+        robot_id = env_defaults["robot_id"]
+        cameras_flag = env_defaults["cameras"] or _build_cameras_flag_from_env()
+        if not robot_port or not robot_id or not cameras_flag:
+            raise HTTPException(
+                status_code=400,
+                detail="Env config incomplete for eval (set SO101_PORT, SO101_ROBOT_ID, SO101_CAMERA_SOURCES/NAMES).",
+            )
+
+        task_name = os.environ.get("EVAL_TASK", "Stack cups")
+        # Default repo_id aligns with the CLI example (timestamped to avoid collisions).
+        repo_default = f"devsheroubi/eval_xvlastack_{time.strftime('%Y%m%d_%H%M%S')}"
+        repo_id = os.environ.get("EVAL_REPO_ID", repo_default)
+        episode_time_s = os.environ.get("EVAL_EPISODE_TIME_S", "50")
+        num_episodes = os.environ.get("EVAL_NUM_EPISODES", "5")
+        policy_path = os.environ.get("EVAL_POLICY_PATH", "Gowshigan/stackcupsv5")
+        dataset_root_env = os.environ.get("EVAL_DATASET_ROOT")
+        dataset_root_path: str | Path
+        if dataset_root_env:
+            candidate = Path(dataset_root_env)
+            if candidate.exists():
+                # Avoid FileExistsError on repeat runs; create a unique sibling.
+                suffix = time.strftime("%Y%m%d_%H%M%S")
+                candidate = candidate.parent / f"{candidate.name}_{suffix}"
+                await manager.broadcast_json({
+                    "type": "reasoning",
+                    "thought": f"[eval_vla] dataset root exists, using new path: {candidate}",
+                })
+            dataset_root_path = candidate
+        else:
+            dataset_root_path = Path(tempfile.mkdtemp(prefix="so101_eval_"))
+            await manager.broadcast_json({
+                "type": "reasoning",
+                "thought": f"[eval_vla] dataset root not set; created {dataset_root_path}",
+            })
+
+        rename_map = os.environ.get(
+            "EVAL_RENAME_MAP",
+            '{"observation.images.mount": "observation.images.image", "observation.images.front": "observation.images.image2"}',
+        )
+
+        cmd = [
+            "lerobot-record",
+            "--robot.type=so101_follower",
+            f"--robot.port={robot_port}",
+            f"--robot.id={robot_id}",
+            f"--robot.cameras={cameras_flag}",
+            f"--dataset.single_task={task_name}",
+            f"--dataset.repo_id={repo_id}",
+            f"--dataset.episode_time_s={episode_time_s}",
+            f"--dataset.num_episodes={num_episodes}",
+            f"--policy.path={policy_path}",
+            f"--dataset.rename_map={rename_map}",
+        ]
+        if dataset_root_path:
+            cmd.append(f"--dataset.root={dataset_root_path}")
+
+        await manager.broadcast_json({"type": "reasoning", "thought": "[eval_vla] starting..."})
+        await manager.broadcast_json({"type": "reasoning", "thought": f"[eval_vla] cmd: {' '.join(cmd)}"})
+
+        eval_process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=os.environ.copy()
+        )
+        eval_process_cmd = cmd
+        eval_started_at = time.time()
+        asyncio.create_task(_pipe_subprocess_output(eval_process, "eval_vla"))
+        logger.info("Started eval_vla pid=%s cmd=%s", eval_process.pid, cmd)
+        # Do NOT restart streaming here; eval needs exclusive access to cameras.
+        return {"ok": True, "cmd": cmd, "pid": eval_process.pid}
+
+
+@app.post("/api/eval_vla/stop")
+async def stop_eval_vla() -> Dict[str, Any]:
+    global eval_process, eval_process_cmd, eval_started_at
+    async with eval_lock:
+        if eval_process is None:
+            return {"ok": True, "status": "not_running"}
+        if eval_process.returncode is None:
+            eval_process.terminate()
+            try:
+                await asyncio.wait_for(eval_process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                eval_process.kill()
+        rc = eval_process.returncode
+        eval_process_cmd.clear()
+        eval_started_at = None
+        eval_process = None
+        await _start_streaming()
+        return {"ok": True, "returncode": rc}
 
 
 # Static files (frontend) -----------------------------------------------------

@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import logging
+import sys
 import time
 from functools import cached_property
 from typing import Any
@@ -110,13 +111,19 @@ class SO101Follower(Robot):
     def calibrate(self) -> None:
         if self.calibration:
             # self.calibration is not empty here
-            user_input = input(
-                f"Press ENTER to use provided calibration file associated with the id {self.id}, or type 'c' and press ENTER to run calibration: "
-            )
-            if user_input.strip().lower() != "c":
-                logger.info(f"Writing calibration file associated with the id {self.id} to the motors")
+            if not sys.stdin.isatty():
+                # Non-interactive context (e.g., background eval run) -> auto-accept calibration file.
+                logger.info("Non-interactive session detected; applying existing calibration for %s", self.id)
                 self.bus.write_calibration(self.calibration)
                 return
+            else:
+                user_input = input(
+                    f"Press ENTER to use provided calibration file associated with the id {self.id}, or type 'c' and press ENTER to run calibration: "
+                )
+                if user_input.strip().lower() != "c":
+                    logger.info(f"Writing calibration file associated with the id {self.id} to the motors")
+                    self.bus.write_calibration(self.calibration)
+                    return
 
         logger.info(f"\nRunning calibration of {self}")
         self.bus.disable_torque()

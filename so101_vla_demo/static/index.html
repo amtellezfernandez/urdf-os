@@ -297,6 +297,14 @@
             </button>
             <div id="teleop-status" class="muted">Idle</div>
           </div>
+          <div id="eval-actions" style="margin-top: 1rem; padding-top: 0.5rem; border-top: 1px solid #333;">
+            <div style="margin-bottom: 0.5rem;"><strong>Eval VLA</strong></div>
+            <button id="start-eval-btn">Start Eval</button>
+            <button id="stop-eval-btn" class="secondary" disabled>
+              Stop Eval
+            </button>
+            <div id="eval-status" class="muted">Idle</div>
+          </div>
         </section>
       </div>
     </main>
@@ -322,6 +330,9 @@
       const phaseIndicator = document.getElementById("phase-indicator");
       const startTeleopBtn = document.getElementById("start-teleop-btn");
       const stopTeleopBtn = document.getElementById("stop-teleop-btn");
+      const startEvalBtn = document.getElementById("start-eval-btn");
+      const stopEvalBtn = document.getElementById("stop-eval-btn");
+      const evalStatusEl = document.getElementById("eval-status");
       const teleopStatusEl = document.getElementById("teleop-status");
       const headerLeader = document.getElementById("header-leader");
       const headerFollower = document.getElementById("header-follower");
@@ -375,6 +386,14 @@
           const res = await fetch("/api/teleop/status");
           const data = await res.json();
           const running = data.running;
+          const available = data.teleop_available !== false;
+          if (!available) {
+            const reason = data.teleop_unavailable_reason || "leader not configured";
+            teleopStatusEl.textContent = `Unavailable (${reason})`;
+            startTeleopBtn.disabled = true;
+            stopTeleopBtn.disabled = true;
+            return;
+          }
           teleopStatusEl.textContent = running
             ? `Running (pid ${data.pid || "?"})`
             : "Idle";
@@ -385,10 +404,31 @@
         }
       }
 
+      async function updateEvalStatus() {
+        try {
+          const res = await fetch("/api/eval_vla/status");
+          const data = await res.json();
+          const running = data.running;
+          evalStatusEl.textContent = running ? "Running" : "Idle";
+          startEvalBtn.disabled = running;
+          stopEvalBtn.disabled = !running;
+        } catch {
+          evalStatusEl.textContent = "Idle";
+          startEvalBtn.disabled = false;
+          stopEvalBtn.disabled = true;
+        }
+      }
+
       async function refreshTeleopDefaults() {
         try {
           const res = await fetch("/api/teleop/defaults");
           const data = await res.json();
+          const available = data.teleop_available !== false;
+          if (!available) {
+            startTeleopBtn.disabled = true;
+            stopTeleopBtn.disabled = true;
+            teleopStatusEl.textContent = "Unavailable (leader not configured)";
+          }
           const leader = `${data.teleop_id || "(unset)"} @ ${
             data.teleop_port || "(unset)"
           }`;
@@ -437,6 +477,33 @@
           appendReasoning("Failed to stop teleop loop.");
         }
         await updateTeleopStatus();
+      }
+
+      async function startEval() {
+        try {
+          const res = await fetch("/api/eval_vla/start", { method: "POST" });
+          if (!res.ok) {
+            const err = await res.json();
+            appendReasoning(`Eval start failed: ${err.detail || res.status}`);
+          } else {
+            appendReasoning("Eval VLA launched.");
+          }
+        } catch (err) {
+          console.error(err);
+          appendReasoning("Failed to start Eval VLA.");
+        }
+        await updateEvalStatus();
+      }
+
+      async function stopEval() {
+        try {
+          await fetch("/api/eval_vla/stop", { method: "POST" });
+          appendReasoning("Eval VLA stopped.");
+        } catch (err) {
+          console.error(err);
+          appendReasoning("Failed to stop Eval VLA.");
+        }
+        await updateEvalStatus();
       }
 
       function connectWs() {
@@ -570,10 +637,13 @@
 
       startTeleopBtn.addEventListener("click", startTeleop);
       stopTeleopBtn.addEventListener("click", stopTeleop);
+      startEvalBtn.addEventListener("click", startEval);
+      stopEvalBtn.addEventListener("click", stopEval);
 
       refreshDeviceConfig();
       refreshTeleopDefaults();
       updateTeleopStatus();
+      updateEvalStatus();
       setInterval(updateTeleopStatus, 4000);
     </script>
   </body>

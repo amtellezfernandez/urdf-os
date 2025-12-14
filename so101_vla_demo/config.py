@@ -14,7 +14,7 @@ def _parse_camera_sources() -> List[int | Path]:
     Parse camera sources from environment variables (comma-separated).
 
     Supports:
-    - `SO101_CAMERA_SOURCES` (preferred): e.g. "0,2,/dev/video4"
+    - `SO101_CAMERA_SOURCES` (preferred): e.g. "/dev/video6,/dev/video2"
     - `SO101_CAMERA_INDEXES` (legacy plural): e.g. "0,2,4"
     - `SO101_CAMERA_INDEX` (legacy singular): e.g. "6"
     """
@@ -78,12 +78,13 @@ class SO101DemoConfig:
     Adjust the defaults or override via environment variables:
     - SO101_PORT
     - SO101_ROBOT_ID (must match calibration ID, e.g., "my_so101")
-    - SO101_CAMERA_SOURCES (comma-separated, e.g., "0,2,/dev/video4")
+    - SO101_CAMERA_SOURCES (comma-separated, e.g., "/dev/video6,/dev/video2")
       (also supports legacy SO101_CAMERA_INDEXES / SO101_CAMERA_INDEX)
     - SO101_CAMERA_NAMES (comma-separated, e.g., "wrist,overhead,side")
     """
 
-    port: str = os.environ.get("SO101_PORT", "/dev/ttyUSB0")
+    # Default to auto-discovery to handle changing device paths.
+    port: str = os.environ.get("SO101_PORT", "auto")
     # Robot ID - must match the ID used during calibration
     robot_id: Optional[str] = os.environ.get("SO101_ROBOT_ID")
     # Multi-camera support: list of camera sources (OpenCV index int or device path Path)

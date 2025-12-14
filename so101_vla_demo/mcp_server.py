@@ -384,35 +384,19 @@ def get_all_camera_frames() -> Dict[str, str]:
 # =============================================================================
 
 @mcp.tool()
-def connect_robot(port: str = "auto") -> Dict[str, Any]:
+def connect_robot() -> Dict[str, Any]:
     """
-    Connect to the SO101 robot arm.
-
-    Args:
-        port: Serial port (e.g., "/dev/ttyUSB0"), "auto" to detect, or "mock" for safe mock mode.
-
-    Returns:
-        Connection status and robot info
+    Connect to the SO101 robot arm using env-configured ports (set by start_so101_demo.sh).
     """
     global robot_state
 
     if robot_state.connected:
-        return {"status": "already_connected", "port": port}
+        return {"status": "already_connected", "port": os.environ.get("SO101_PORT")}
 
     try:
-        if port.strip().lower() == "mock":
-            os.environ["USE_MOCK_ROBOT"] = "true"
-            cfg = SO101DemoConfig()
-            robot_state.robot_interface = make_robot_interface(cfg)
-            robot_state.robot_interface.connect()
-            robot_state.connected = True
-            robot_state.motion_enabled = True
-            return {"status": "connected", "port": "mock"}
-
-        # Let SO101RobotInterface handle discovery when asked.
-        if port.strip().lower() in {"auto", "auto-detect", "autodetect"}:
-            os.environ["SO101_PORT"] = "auto"
-        else:
+        # Always use the env-configured port
+        port = (os.environ.get("SO101_PORT") or "").strip()
+        if port:
             os.environ["SO101_PORT"] = port
         os.environ["USE_MOCK_ROBOT"] = "false"
 
@@ -429,7 +413,7 @@ def connect_robot(port: str = "auto") -> Dict[str, Any]:
             connected_port = None
 
         robot_state.motion_enabled = os.environ.get("SO101_ENABLE_MOTION", "false").lower() in {"1", "true", "yes"}
-        return {"status": "connected", "port": connected_port or os.environ.get("SO101_PORT", port)}
+        return {"status": "connected", "port": connected_port or os.environ.get("SO101_PORT")}
 
     except Exception as e:
         logger.error(f"Failed to connect robot: {e}")
@@ -778,7 +762,7 @@ def start_skill(
         return {"status": "error", "error": "Robot not connected. Call connect_robot() first."}
 
     # Safety gate: require explicit enable on real robot.
-    is_mock = type(robot_state.robot_interface).__name__.lower().startswith("mock")
+    is_mock = False
     if not is_mock and not robot_state.motion_enabled:
         return {
             "status": "error",
