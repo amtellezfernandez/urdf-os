@@ -109,6 +109,7 @@ The MCP server exposes robot control as tools that Claude/AI can call.
 # Set environment variables
 export PYTHONPATH=/path/to/urdf-os/src
 export SO100_PORT=/dev/ttyACM0       # or "auto" for auto-detect
+export SO100_ROBOT_ID=my_so100       # MUST match calibration ID!
 export SO100_CAMERA_SOURCES=0        # camera index (use what you found in Step 2)
 export SO100_CAMERA_NAMES=wrist      # name for the camera
 
@@ -208,6 +209,7 @@ sg dialout -c "your-command-here"
 
 **"has no calibration registered" error:**
 - Run calibration (Step 3) before connecting the robot
+- **Set `SO100_ROBOT_ID` environment variable** to match your calibration ID (e.g., `my_so100`)
 - Check calibration file exists: `ls ~/.cache/huggingface/lerobot/calibration/robots/so100_follower/`
 
 **"Magnitude 2048 exceeds 2047" during calibration:**
@@ -218,6 +220,83 @@ sg dialout -c "your-command-here"
 - Check `motion_enabled` is `true` in `get_robot_state()`
 - Call `enable_motion(true)` before starting skills
 - For mock robot, motion is enabled by default
+
+---
+
+### Step 7: Web UI with Camera Streaming (Alternative to MCP)
+
+The web UI provides a browser-based interface with live camera streaming.
+
+**IMPORTANT:** You must set `SO100_ROBOT_ID` to match your calibration ID!
+
+**Start the Web UI server:**
+```bash
+# Set all required environment variables
+export PYTHONPATH=/path/to/urdf-os/src
+export SO100_PORT=/dev/ttyACM0
+export SO100_ROBOT_ID=my_so100          # MUST match calibration ID from Step 3!
+export SO100_CAMERA_SOURCES=0            # camera index
+export SO100_CAMERA_NAMES=wrist
+
+# Start server (use sg dialout if needed)
+sg dialout -c "python -m so100_vla_demo.demo_script"
+
+# Or if permissions are already set:
+python -m so100_vla_demo.demo_script
+```
+
+**Open in browser:** http://localhost:8000/static/index.html
+
+**Using the Web UI:**
+1. Click **Connect** to connect to the robot
+2. Click **Start Stream** to see live camera feed
+3. Use the chat panel to interact with the LLM (if configured)
+
+**Common Web UI Errors:**
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| "has no calibration registered" | `SO100_ROBOT_ID` not set or wrong | Set `SO100_ROBOT_ID=my_so100` (must match calibration) |
+| "address already in use" | Port 8000 occupied | Run `fuser -k 8000/tcp` then restart |
+| Camera not streaming | Wrong camera index | Check `SO100_CAMERA_SOURCES` matches your camera |
+| "Permission denied" | Not in dialout group | Use `sg dialout -c "..."` or logout/login |
+
+**Finding the correct camera devices:**
+
+Your computer likely has multiple cameras - the webcam (usually /dev/video0) and the robot cameras. To find the robot cameras:
+
+```bash
+# List all video devices
+ls -la /dev/video*
+
+# Test each camera to see which ones work
+for i in 0 2 4 6; do
+  python -c "
+import cv2
+cap = cv2.VideoCapture($i)
+if cap.isOpened():
+    ret, frame = cap.read()
+    if ret: print(f'/dev/video$i: WORKS - {frame.shape}')
+    cap.release()
+" 2>/dev/null
+done
+```
+
+Typically:
+- `/dev/video0` or `/dev/video2` = Computer webcam (lower resolution like 640x360)
+- `/dev/video4`, `/dev/video6` = Robot cameras (usually 640x480)
+
+**Full working example with robot cameras:**
+```bash
+sg dialout -c "PYTHONPATH=/home/$USER/urdf-os/src \
+  SO100_PORT=/dev/ttyACM0 \
+  SO100_ROBOT_ID=my_so100 \
+  SO100_CAMERA_SOURCES=4,6 \
+  SO100_CAMERA_NAMES=wrist,overhead \
+  python -m so100_vla_demo.demo_script"
+```
+
+**Note:** Replace `4,6` with the actual camera indices you found that correspond to your robot cameras.
 
 ---
 

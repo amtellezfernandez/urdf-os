@@ -77,12 +77,15 @@ class SO100DemoConfig:
 
     Adjust the defaults or override via environment variables:
     - SO100_PORT
+    - SO100_ROBOT_ID (must match calibration ID, e.g., "my_so100")
     - SO100_CAMERA_SOURCES (comma-separated, e.g., "0,2,/dev/video4")
       (also supports legacy SO100_CAMERA_INDEXES / SO100_CAMERA_INDEX)
     - SO100_CAMERA_NAMES (comma-separated, e.g., "wrist,overhead,side")
     """
 
     port: str = os.environ.get("SO100_PORT", "/dev/ttyUSB0")
+    # Robot ID - must match the ID used during calibration
+    robot_id: Optional[str] = os.environ.get("SO100_ROBOT_ID")
     # Multi-camera support: list of camera sources (OpenCV index int or device path Path)
     camera_indexes: List[int | Path] = field(default_factory=_parse_camera_sources)
     # Camera names corresponding to each index
@@ -125,6 +128,7 @@ class SO100DemoConfig:
         return SO100FollowerConfig(
             port=self.port,
             cameras=cameras,
+            id=self.robot_id,
         )
 
     def get_camera_names(self) -> List[str]:
