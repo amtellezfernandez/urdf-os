@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Tuple
@@ -81,6 +82,20 @@ class SO100RobotInterface:
         last_err: Exception | None = None
         for port in ports_to_try:
             try:
+                # Preflight permissions check: SO100Follower may wrap PermissionError into a generic message,
+                # so catch it early to provide actionable guidance.
+                if Path(port).exists() and os.geteuid() != 0:
+                    try:
+                        mode = os.stat(port).st_mode
+                        is_chr = stat.S_ISCHR(mode)
+                    except Exception:  # noqa: BLE001
+                        is_chr = False
+                    if is_chr and not os.access(port, os.R_OK | os.W_OK):
+                        raise PermissionError(
+                            f"Permission denied opening serial device '{port}'. "
+                            "On Linux, add your user to the 'dialout' group (and re-login) or run with sudo."
+                        )
+
                 self.config.port = port
                 self.robot = SO100Follower(self.config)
                 logger.info("Connecting SO100Follower on port=%s ...", port)

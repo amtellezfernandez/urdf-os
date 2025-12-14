@@ -29,6 +29,8 @@ from PIL import Image as PILImage
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
 import torch
+import grp
+import pwd
 
 from lerobot.utils.constants import ACTION, OBS_IMAGE, OBS_IMAGES, OBS_STATE
 from lerobot.configs.policies import PreTrainedConfig
@@ -262,6 +264,7 @@ class RobotState:
     connected: bool = False
     robot_interface: Any = None
     joints: Dict[str, float] = field(default_factory=dict)
+    motion_enabled: bool = False
 
 
 # Global state instances
@@ -403,6 +406,7 @@ def connect_robot(port: str = "auto") -> Dict[str, Any]:
             robot_state.robot_interface = make_robot_interface(cfg)
             robot_state.robot_interface.connect()
             robot_state.connected = True
+            robot_state.motion_enabled = True
             return {"status": "connected", "port": "mock"}
 
         # Let SO100RobotInterface handle discovery when asked.
@@ -417,7 +421,15 @@ def connect_robot(port: str = "auto") -> Dict[str, Any]:
         robot_state.robot_interface.connect()
         robot_state.connected = True
 
-        return {"status": "connected", "port": os.environ.get("SO100_PORT", port)}
+        # Best-effort actual port used (especially when auto-detect is enabled).
+        connected_port = None
+        try:
+            connected_port = getattr(getattr(robot_state.robot_interface, "config", None), "port", None)
+        except Exception:  # noqa: BLE001
+            connected_port = None
+
+        robot_state.motion_enabled = os.environ.get("SO100_ENABLE_MOTION", "false").lower() in {"1", "true", "yes"}
+        return {"status": "connected", "port": connected_port or os.environ.get("SO100_PORT", port)}
 
     except Exception as e:
         logger.error(f"Failed to connect robot: {e}")
@@ -448,6 +460,7 @@ def disconnect_robot() -> Dict[str, Any]:
             robot_state.robot_interface.disconnect()
         robot_state.connected = False
         robot_state.robot_interface = None
+        robot_state.motion_enabled = False
         return {"status": "disconnected"}
     except Exception as e:
         return {"status": "error", "error": str(e)}
@@ -469,10 +482,77 @@ def get_robot_state() -> Dict[str, Any]:
         return {
             "connected": True,
             "joints": joints,
-            "cameras_active": list(images.keys())
+            "cameras_active": list(images.keys()),
+            "motion_enabled": bool(robot_state.motion_enabled),
         }
     except Exception as e:
-        return {"connected": True, "joints": {}, "error": str(e)}
+        return {"connected": True, "joints": {}, "motion_enabled": bool(robot_state.motion_enabled), "error": str(e)}
+
+
+@mcp.tool()
+def list_serial_ports() -> List[Dict[str, str]]:
+    """
+    List likely SO100 serial ports and their permissions (Linux).
+
+    This helps debug connect failures (most commonly: user not in 'dialout').
+    """
+    ports: list[str] = []
+    for p in ["/dev/serial/by-id", "/dev"]:
+        try:
+            base = Path(p)
+            if not base.exists():
+                continue
+            if base.name == "by-id":
+                for item in sorted(base.iterdir(), key=lambda x: x.name):
+                    if item.is_symlink():
+                        ports.append(str(item))
+            else:
+                for pattern in ("ttyACM*", "ttyUSB*"):
+                    for item in sorted(base.glob(pattern), key=lambda x: x.name):
+                        ports.append(str(item))
+        except Exception:  # noqa: BLE001
+            continue
+
+    seen: set[str] = set()
+    results: list[dict[str, str]] = []
+    for p in ports:
+        if p in seen:
+            continue
+        seen.add(p)
+        try:
+            st = os.stat(p)
+            mode = oct(st.st_mode & 0o777)
+            try:
+                user = pwd.getpwuid(st.st_uid).pw_name
+            except Exception:  # noqa: BLE001
+                user = str(st.st_uid)
+            try:
+                group = grp.getgrgid(st.st_gid).gr_name
+            except Exception:  # noqa: BLE001
+                group = str(st.st_gid)
+            results.append(
+                {
+                    "port": p,
+                    "mode": mode,
+                    "owner": user,
+                    "group": group,
+                    "can_read_write": str(bool(os.access(p, os.R_OK | os.W_OK))),
+                }
+            )
+        except Exception as e:  # noqa: BLE001
+            results.append({"port": p, "error": str(e)})
+    return results
+
+
+@mcp.tool()
+def enable_motion(enable: bool = False) -> Dict[str, Any]:
+    """
+    Explicitly enable/disable robot motion for MCP-triggered skills.
+
+    Safety: on real hardware we require this to be enabled before `start_skill()` will send actions.
+    """
+    robot_state.motion_enabled = bool(enable)
+    return {"status": "ok", "motion_enabled": bool(robot_state.motion_enabled)}
 
 
 # =============================================================================
@@ -610,6 +690,14 @@ def start_skill(
     # Check robot connection
     if not robot_state.connected:
         return {"status": "error", "error": "Robot not connected. Call connect_robot() first."}
+
+    # Safety gate: require explicit enable on real robot.
+    is_mock = type(robot_state.robot_interface).__name__.lower().startswith("mock")
+    if not is_mock and not robot_state.motion_enabled:
+        return {
+            "status": "error",
+            "error": "Motion is disabled for safety. Call enable_motion(true) (or set SO100_ENABLE_MOTION=true) before start_skill().",
+        }
 
     # Create execution
     skill_id = f"skill_{uuid.uuid4().hex[:8]}"

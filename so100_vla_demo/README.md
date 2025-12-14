@@ -27,6 +27,11 @@ sudo usermod -a -G dialout,video $USER
 # Log out and back in for changes to take effect
 ```
 
+If you can’t log out (or want a quick temporary workaround), you can also run just the MCP server with sudo:
+```bash
+sudo -E /home/USER/miniconda3/envs/lerobot/bin/python -m so100_vla_demo.mcp_server
+```
+
 ### 3. Run the Web UI (Camera Streaming)
 
 ```bash
@@ -96,6 +101,9 @@ get_camera_frame("wrist")
 
 # Connect robot
 connect_robot("auto")  # or connect_robot("mock") for safe testing
+
+# Safety (real hardware): enable motion explicitly
+enable_motion(true)
 
 # Run VLA skill with natural language
 start_skill("smolvla", instruction="pick up the red cup")
