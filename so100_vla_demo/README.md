@@ -1,5 +1,226 @@
 # SO100 VLA Demo Scaffold
 
+## Complete Setup Guide: Robot Calibration → Camera Streaming → AI Control
+
+This guide walks you through the complete setup process from a fresh install to having Claude/AI control the robot via MCP.
+
+### Prerequisites Checklist
+
+- [ ] SO100 robot arm connected via USB
+- [ ] USB camera(s) connected
+- [ ] Conda environment `lerobot` created and activated
+- [ ] User added to `dialout` and `video` groups
+
+---
+
+### Step 1: Hardware Permissions (REQUIRED)
+
+```bash
+# Add user to required groups
+sudo usermod -a -G dialout,video $USER
+
+# IMPORTANT: You must log out and log back in for this to take effect!
+# Alternatively, use this workaround for current session:
+# sg dialout -c "your-command-here"
+```
+
+**Verify permissions:**
+```bash
+# Check group membership (must show 'dialout')
+groups $USER | grep dialout
+
+# Check serial port access
+ls -la /dev/ttyACM* /dev/ttyUSB*
+```
+
+---
+
+### Step 2: Identify Your Hardware
+
+```bash
+# Find cameras
+lerobot-find-cameras opencv
+# Example output: Camera found at index 0, 2
+
+# Find serial port
+ls /dev/ttyACM* /dev/ttyUSB* /dev/serial/by-id/
+# Example: /dev/ttyACM0 or /dev/serial/by-id/usb-1a86_USB_Single_Serial_xxx
+```
+
+**Test camera directly:**
+```bash
+python -c "
+import cv2
+for i in [0, 2, 4]:
+    cap = cv2.VideoCapture(i)
+    if cap.isOpened():
+        ret, frame = cap.read()
+        if ret:
+            print(f'/dev/video{i}: WORKS - {frame.shape}')
+        cap.release()
+    else:
+        print(f'/dev/video{i}: not available')
+"
+```
+
+---
+
+### Step 3: Robot Calibration (CRITICAL - Must Do Before Control)
+
+The robot **must be calibrated** before it can read joint positions or be controlled. Without calibration, you'll see errors like `has no calibration registered`.
+
+**Run calibration:**
+```bash
+# Use sg dialout if you haven't logged out/in yet
+sg dialout -c "lerobot-calibrate --robot.type=so100_follower --robot.port=/dev/ttyACM0 --robot.id=my_so100"
+
+# Or if you've logged out/in:
+lerobot-calibrate --robot.type=so100_follower --robot.port=/dev/ttyACM0 --robot.id=my_so100
+```
+
+**During calibration:**
+1. Move the robot to the **middle** of its range of motion
+2. **IMPORTANT**: Do NOT position joints at the exact center (midpoint). Move each joint **slightly off-center**.
+3. Press ENTER when prompted
+
+**Known Issue - "Magnitude 2048 exceeds 2047" Error:**
+
+If you see this error:
+```
+ValueError: Magnitude 2048 exceeds 2047 (max for sign_bit_index=11)
+```
+
+This happens when a joint is positioned at exactly 2048 (the midpoint). **Solution**: Move the problematic joint slightly away from the exact center position and try again.
+
+**Verify calibration:**
+```bash
+ls ~/.cache/huggingface/lerobot/calibration/robots/so100_follower/
+# Should show: my_so100.json (or your robot ID)
+```
+
+---
+
+### Step 4: Start MCP Server (for AI Control)
+
+The MCP server exposes robot control as tools that Claude/AI can call.
+
+**Option A: SSE Transport (Recommended for external AI clients)**
+```bash
+# Set environment variables
+export PYTHONPATH=/path/to/urdf-os/src
+export SO100_PORT=/dev/ttyACM0       # or "auto" for auto-detect
+export SO100_CAMERA_SOURCES=0        # camera index (use what you found in Step 2)
+export SO100_CAMERA_NAMES=wrist      # name for the camera
+
+# Use sg dialout if permissions not yet active
+sg dialout -c "python -m so100_vla_demo.mcp_server --transport sse --port 8765"
+
+# Server will be available at: http://localhost:8765/sse
+```
+
+**Option B: Stdio Transport (for Claude Code integration)**
+```bash
+# Configure .mcp.json in repo root (see Quick Start section below)
+# Claude Code will auto-start the server
+```
+
+---
+
+### Step 5: Control Robot via MCP Client
+
+Once the MCP server is running, you can control the robot:
+
+**Using the included Python client:**
+```bash
+# List available tools
+python mcp_client.py list_tools
+
+# Connect to robot
+python mcp_client.py connect_robot auto
+
+# Get robot state (shows joint positions if calibrated)
+python mcp_client.py get_robot_state
+
+# Get camera frame from connected robot
+python mcp_client.py get_robot_camera_frame wrist
+
+# Enable motion (REQUIRED before moving real robot)
+python mcp_client.py enable_motion true
+
+# Run a skill
+python mcp_client.py start_skill home
+python mcp_client.py start_skill smolvla "pick up the red cup" 100
+```
+
+**MCP Tools Available:**
+| Tool | Description |
+|------|-------------|
+| `list_cameras` | List configured camera names |
+| `get_camera_frame` | Get frame from standalone camera |
+| `get_robot_camera_frame` | Get frame from robot's connected camera |
+| `list_serial_ports` | Debug serial port permissions |
+| `connect_robot` | Connect to robot ("auto", "mock", or specific port) |
+| `disconnect_robot` | Disconnect from robot |
+| `get_robot_state` | Get joint positions and status |
+| `enable_motion` | Enable/disable robot motion (safety gate) |
+| `list_skills` | List available VLA skills |
+| `start_skill` | Start a skill execution |
+| `stop_skill` | Stop a running skill |
+| `get_skill_status` | Check skill progress |
+
+---
+
+### Step 6: AI Agent Control Flow
+
+When Claude/AI controls the robot via MCP:
+
+```
+1. AI sees → get_robot_camera_frame("wrist")
+2. AI connects → connect_robot("auto")
+3. AI checks state → get_robot_state()
+4. AI enables motion → enable_motion(true)  # REQUIRED for real hardware
+5. AI acts → start_skill("smolvla", instruction="pick up the cup")
+6. AI monitors → get_skill_status(skill_id)
+7. AI adjusts → stop_skill(skill_id) if needed
+```
+
+---
+
+### Troubleshooting
+
+**"Permission denied" on serial port:**
+```bash
+# Check if user is in dialout group
+groups $USER | grep dialout
+
+# If not, add and re-login:
+sudo usermod -a -G dialout $USER
+# Then log out and log back in!
+
+# Quick workaround without logout:
+sg dialout -c "your-command-here"
+```
+
+**"Camera not available" errors:**
+- The robot interface holds cameras exclusively when connected
+- Use `get_robot_camera_frame` instead of `get_camera_frame` when robot is connected
+- Check camera isn't used by another process: `fuser /dev/video0`
+
+**"has no calibration registered" error:**
+- Run calibration (Step 3) before connecting the robot
+- Check calibration file exists: `ls ~/.cache/huggingface/lerobot/calibration/robots/so100_follower/`
+
+**"Magnitude 2048 exceeds 2047" during calibration:**
+- Move the joint slightly away from exact center position
+- Each joint should be roughly in the middle, but not exactly at the midpoint
+
+**Robot won't move after start_skill:**
+- Check `motion_enabled` is `true` in `get_robot_state()`
+- Call `enable_motion(true)` before starting skills
+- For mock robot, motion is enabled by default
+
+---
+
 ## Quick Start (Team Member Setup)
 
 ### 1. Clone and Install

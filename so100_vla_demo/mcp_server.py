@@ -490,6 +490,92 @@ def get_robot_state() -> Dict[str, Any]:
 
 
 @mcp.tool()
+def get_robot_camera_frame(camera_name: str = "wrist") -> Image:
+    """
+    Get camera frame from the connected robot's cameras.
+
+    This is different from get_camera_frame() - it uses the robot interface's
+    cameras which are already open when the robot is connected.
+
+    Args:
+        camera_name: Name of camera (use get_robot_state() to see cameras_active)
+
+    Returns:
+        Current camera frame as an image
+    """
+    if not robot_state.connected or not robot_state.robot_interface:
+        # Return error placeholder
+        placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+        cv2.putText(
+            placeholder,
+            "Robot not connected",
+            (120, 240),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (255, 255, 255),
+            2
+        )
+        pil_img = PILImage.fromarray(placeholder)
+        buf = BytesIO()
+        pil_img.save(buf, format="JPEG", quality=85)
+        return Image(data=buf.getvalue(), format="jpeg")
+
+    try:
+        images, _ = robot_state.robot_interface.get_observation()
+        if camera_name not in images:
+            available = list(images.keys())
+            placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(
+                placeholder,
+                f"Camera '{camera_name}' not found",
+                (50, 220),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (255, 255, 255),
+                2
+            )
+            cv2.putText(
+                placeholder,
+                f"Available: {available}",
+                (50, 260),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (200, 200, 200),
+                2
+            )
+            pil_img = PILImage.fromarray(placeholder)
+            buf = BytesIO()
+            pil_img.save(buf, format="JPEG", quality=85)
+            return Image(data=buf.getvalue(), format="jpeg")
+
+        frame = images[camera_name]
+        # Ensure RGB and uint8
+        if frame.dtype != np.uint8:
+            frame = np.clip(frame, 0, 255).astype(np.uint8)
+
+        pil_img = PILImage.fromarray(frame)
+        buf = BytesIO()
+        pil_img.save(buf, format="JPEG", quality=85)
+        return Image(data=buf.getvalue(), format="jpeg")
+
+    except Exception as e:
+        placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+        cv2.putText(
+            placeholder,
+            f"Error: {str(e)[:40]}",
+            (50, 240),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 100, 100),
+            2
+        )
+        pil_img = PILImage.fromarray(placeholder)
+        buf = BytesIO()
+        pil_img.save(buf, format="JPEG", quality=85)
+        return Image(data=buf.getvalue(), format="jpeg")
+
+
+@mcp.tool()
 def list_serial_ports() -> List[Dict[str, str]]:
     """
     List likely SO100 serial ports and their permissions (Linux).
