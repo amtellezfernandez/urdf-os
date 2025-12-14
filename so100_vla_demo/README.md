@@ -32,6 +32,12 @@ If you can’t log out (or want a quick temporary workaround), you can also run 
 sudo -E /home/USER/miniconda3/envs/lerobot/bin/python -m so100_vla_demo.mcp_server
 ```
 
+Recommended: use a stable port path if available:
+```bash
+ls -la /dev/serial/by-id
+export SO100_PORT=/dev/serial/by-id/<your-so100-device>
+```
+
 ### 3. Run the Web UI (Camera Streaming)
 
 ```bash
@@ -98,6 +104,9 @@ Replace `/home/USER/...` with your actual paths.
 # See cameras
 list_cameras()
 get_camera_frame("wrist")
+
+# Debug connection (shows port permissions)
+list_serial_ports()
 
 # Connect robot
 connect_robot("auto")  # or connect_robot("mock") for safe testing
