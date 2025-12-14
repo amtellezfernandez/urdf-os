@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import cv2
 import numpy as np
@@ -27,7 +27,137 @@ from PIL import Image as PILImage
 
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
+import torch
 
+from lerobot.utils.constants import ACTION, OBS_IMAGE, OBS_IMAGES, OBS_STATE
+from lerobot.policies.pretrained import PreTrainedPolicy
+from lerobot.policies.factory import make_pre_post_processors
+
+from .config import SO100DemoConfig, _parse_camera_sources, _parse_camera_names
+from .robot_interface import make_robot_interface
+from .search_skill import SearchPolicySkill
+from .grasp_skill import GraspPolicySkill
+
+
+def _as_pretrained_name_or_path(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _get_motor_names_from_robot_interface(robot_interface) -> list[str]:
+    robot = getattr(robot_interface, "robot", None)
+    if robot is None:
+        return []
+    bus = getattr(robot, "bus", None)
+    motors = getattr(bus, "motors", None)
+    if isinstance(motors, dict):
+        return list(motors.keys())
+    return []
+
+
+def _clamp_so100_action(motor: str, value: float) -> float:
+    if motor == "gripper":
+        return float(max(0.0, min(100.0, value)))
+    return float(max(-100.0, min(100.0, value)))
+
+
+@dataclass
+class VLAPolicyRunner:
+    """
+    Minimal runtime wrapper for a LeRobot VLA policy (SmolVLA, XVLA, ACT, etc.).
+
+    Requires a LeRobot-exported checkpoint that includes:
+    - `config.json`
+    - `model.safetensors`
+    - ideally `policy_preprocessor.json` + `policy_postprocessor.json` and their stats files
+    """
+
+    policy_id: str
+    policy: PreTrainedPolicy | None = None
+    preprocessor: Any | None = None
+    postprocessor: Any | None = None
+
+    def load(self) -> None:
+        self.policy = PreTrainedPolicy.from_pretrained(self.policy_id)
+        try:
+            self.preprocessor, self.postprocessor = make_pre_post_processors(
+                policy_cfg=self.policy.config,
+                pretrained_path=self.policy_id,
+            )
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(
+                f"Checkpoint '{self.policy_id}' is missing processor files (policy_preprocessor.json / "
+                f"policy_postprocessor.json) or stats. Use a LeRobot-exported checkpoint."
+            ) from e
+
+    def ensure_loaded(self) -> None:
+        if self.policy is None or self.preprocessor is None or self.postprocessor is None:
+            self.load()
+
+    def step(
+        self,
+        *,
+        images: Dict[str, np.ndarray],
+        joints: Dict[str, float],
+        motor_names: list[str],
+        instruction: str,
+    ) -> Dict[str, float]:
+        self.ensure_loaded()
+        assert self.policy is not None and self.preprocessor is not None and self.postprocessor is not None
+
+        state = np.asarray([float(joints.get(m, 0.0)) for m in motor_names], dtype=np.float32)
+
+        # Pick a default image for fallbacks.
+        default_img = None
+        if "wrist" in images:
+            default_img = images["wrist"]
+        elif images:
+            default_img = images[next(iter(images.keys()))]
+        if default_img is None:
+            raise RuntimeError("No camera images provided")
+
+        raw_batch: Dict[str, Any] = {"task": instruction, OBS_STATE: state}
+
+        # Provide images matching the policy's expected input feature keys.
+        # SmolVLA often expects `observation.images.<name>` rather than `observation.image`.
+        expected_inputs = getattr(self.policy.config, "input_features", {}) or {}
+        for key in expected_inputs.keys():
+            if key == OBS_IMAGE:
+                raw_batch[OBS_IMAGE] = default_img
+            elif key.startswith(f"{OBS_IMAGES}."):
+                cam = key.split(".", 2)[2]  # observation.images.<cam>
+                # Best-effort aliasing between common camera names.
+                candidates = [cam]
+                if cam in {"front", "top"}:
+                    candidates.extend(["overhead", "side", "wrist"])
+                elif cam in {"overhead"}:
+                    candidates.extend(["front", "top"])
+                elif cam in {"agentview"}:
+                    candidates.extend(["front", "overhead"])
+
+                chosen = None
+                for c in candidates:
+                    if c in images:
+                        chosen = images[c]
+                        break
+                raw_batch[key] = chosen if chosen is not None else default_img
+
+        # Backward-compat: if the config didn't list an image key, still provide one.
+        raw_batch.setdefault(OBS_IMAGE, default_img)
+
+        processed_batch = self.preprocessor(raw_batch)
+        with self.policy.no_grad():
+            action: torch.Tensor = self.policy.select_action(processed_batch)
+        action = self.postprocessor(action)
+
+        action_vec = action.detach().cpu().numpy().reshape(-1).astype(np.float32)
+        if len(action_vec) < len(motor_names):
+            raise RuntimeError(f"Action dim {len(action_vec)} < motors {len(motor_names)}")
+        action_vec = action_vec[: len(motor_names)]
+
+        return {m: _clamp_so100_action(m, float(action_vec[i])) for i, m in enumerate(motor_names)}
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,9 +173,9 @@ mcp = FastMCP("so100-vla-server")
 class CameraState:
     """Manages camera connections."""
     cameras: Dict[str, cv2.VideoCapture] = field(default_factory=dict)
-    camera_indexes: Dict[str, int] = field(default_factory=dict)
+    camera_indexes: Dict[str, Union[int, str, Path]] = field(default_factory=dict)
 
-    def configure(self, names: List[str], indexes: List[int]):
+    def configure(self, names: List[str], indexes: List[Union[int, str, Path]]) -> None:
         """Configure camera name to index mapping."""
         self.camera_indexes = dict(zip(names, indexes))
 
@@ -104,14 +234,25 @@ class RobotState:
 camera_state = CameraState()
 robot_state = RobotState()
 running_skills: Dict[str, SkillExecution] = {}
+# Configure cameras from environment using shared parser
+_camera_sources = _parse_camera_sources()
+_camera_names = _parse_camera_names()
+camera_state.configure(_camera_names, _camera_sources)
 
-# Configure cameras from environment
-_camera_indexes = os.environ.get("SO100_CAMERA_INDEXES", "0").split(",")
-_camera_names = os.environ.get("SO100_CAMERA_NAMES", "wrist").split(",")
-camera_state.configure(
-    [n.strip() for n in _camera_names],
-    [int(i.strip()) for i in _camera_indexes]
-)
+# Skill objects (lazy-loaded)
+_search_policy_path = _as_pretrained_name_or_path(os.environ.get("SEARCH_POLICY_PATH"))
+_grasp_policy_path = _as_pretrained_name_or_path(os.environ.get("GRASP_POLICY_PATH"))
+_smolvla_policy_id = _as_pretrained_name_or_path(os.environ.get("SMOLVLA_POLICY_ID"))
+_xvla_policy_id = _as_pretrained_name_or_path(os.environ.get("XVLA_POLICY_ID"))
+
+search_skill = SearchPolicySkill(policy_path=Path(_search_policy_path) if _search_policy_path else None)
+grasp_skill = GraspPolicySkill(policy_path=Path(_grasp_policy_path) if _grasp_policy_path else Path("MISSING"))
+
+policy_runners: Dict[str, VLAPolicyRunner] = {}
+if _smolvla_policy_id:
+    policy_runners["smolvla"] = VLAPolicyRunner(policy_id=_smolvla_policy_id)
+if _xvla_policy_id:
+    policy_runners["xvla"] = VLAPolicyRunner(policy_id=_xvla_policy_id)
 
 # =============================================================================
 # Camera Tools
@@ -199,13 +340,9 @@ def connect_robot(port: str = "auto") -> Dict[str, Any]:
     global robot_state
 
     if robot_state.connected:
-        return {"status": "already_connected", "port": "unknown"}
+        return {"status": "already_connected", "port": port}
 
     try:
-        # Import here to avoid loading LeRobot if not needed
-        from .config import SO100DemoConfig
-        from .robot_interface import make_robot_interface
-
         # Auto-detect port if needed
         if port == "auto":
             for try_port in ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1"]:
@@ -213,7 +350,7 @@ def connect_robot(port: str = "auto") -> Dict[str, Any]:
                     port = try_port
                     break
             else:
-                return {"status": "error", "error": "No robot port found. Connect USB cable."}
+                return {"status": "error", "error": "No robot port found. Connect USB cable or set SO100_PORT."}
 
         os.environ["SO100_PORT"] = port
         os.environ["USE_MOCK_ROBOT"] = "false"
@@ -287,7 +424,21 @@ def list_skills() -> List[Dict[str, str]]:
     Returns:
         List of skills with names and descriptions
     """
-    skills = [
+    skills: list[dict[str, Any]] = [
+        {
+            "name": "smolvla",
+            "description": "Run SmolVLA policy with a natural-language instruction (e.g. 'pick up the blue block').",
+            "requires_policy": True,
+            "policy_env": "SMOLVLA_POLICY_ID",
+            "policy_id": os.environ.get("SMOLVLA_POLICY_ID", ""),
+        },
+        {
+            "name": "xvla",
+            "description": "Run XVLA policy with a natural-language instruction (if you have an XVLA checkpoint).",
+            "requires_policy": True,
+            "policy_env": "XVLA_POLICY_ID",
+            "policy_id": os.environ.get("XVLA_POLICY_ID", ""),
+        },
         {
             "name": "grasp",
             "description": "Grasp an object using trained VLA policy (SmolVLA). "
@@ -320,29 +471,85 @@ def _run_skill_loop(execution: SkillExecution):
             execution.error = "Robot not connected"
             return
 
-        # Run skill steps
-        for step in range(execution.max_steps):
-            if execution.stop_requested:
-                execution.status = "stopped"
-                logger.info(f"Skill {execution.skill_id} stopped at step {step}")
-                return
+        # Dispatch to specific skills
+        robot = robot_state.robot_interface
 
-            # Get observation
-            try:
-                images, joints = robot_state.robot_interface.get_observation()
-            except Exception as e:
+        if execution.skill_name == "home":
+            # Simple home: drive all joints back toward 0 based on current obs
+            images, joints = robot.get_observation()
+            targets = {name: 0.0 for name in joints.keys()}
+            robot.send_joint_targets(targets)
+            execution.steps_completed = 1
+            execution.status = "completed"
+            logger.info("Home skill sent zero targets to all joints.")
+            return
+
+        if execution.skill_name in {"smolvla", "xvla"}:
+            runner = policy_runners.get(execution.skill_name)
+            if runner is None:
                 execution.status = "error"
-                execution.error = f"Observation failed: {e}"
+                execution.error = f"No policy configured for {execution.skill_name}. Set {execution.skill_name.upper()}_POLICY_ID."
                 return
+            motor_names = _get_motor_names_from_robot_interface(robot)
+            if not motor_names:
+                execution.status = "error"
+                execution.error = "Could not determine motor names (robot not connected?)"
+                return
+            instruction = getattr(execution, "instruction", "").strip()
+            if not instruction:
+                target = getattr(execution, "target_object", "").strip()
+                instruction = f"pick up the {target}" if target else "do the task"
 
-            # TODO: Run actual VLA policy here
-            # For now, just simulate steps
-            time.sleep(0.1)
+            for step in range(execution.max_steps):
+                if execution.stop_requested:
+                    execution.status = "stopped"
+                    execution.steps_completed = step
+                    return
+                images, joints = robot.get_observation()
+                if not isinstance(images, dict) or not images:
+                    execution.status = "error"
+                    execution.error = "No camera image available"
+                    return
+                joint_targets = runner.step(
+                    images=images,
+                    joints=joints,
+                    motor_names=motor_names,
+                    instruction=instruction,
+                )
+                robot.send_joint_targets(joint_targets)
+                execution.steps_completed = step + 1
+                time.sleep(0.05)
 
-            execution.steps_completed = step + 1
+            execution.status = "completed"
+            return
 
-        execution.status = "completed"
-        logger.info(f"Skill {execution.skill_id} completed after {execution.steps_completed} steps")
+        if execution.skill_name == "search":
+            if search_skill.policy_path is None:
+                execution.status = "error"
+                execution.error = "SEARCH_POLICY_PATH not set"
+                return
+            found, steps = search_skill.run_search_loop(
+                robot=robot,
+                object_name=getattr(execution, "target_object", "object"),
+                detect_fn=lambda frame, obj: False,  # Replace with VLM detector if available
+                max_steps=execution.max_steps,
+            )
+            execution.steps_completed = steps
+            execution.status = "completed" if found else "completed"
+            return
+
+        if execution.skill_name == "grasp":
+            if not grasp_skill.policy_path.exists():
+                execution.status = "error"
+                execution.error = "GRASP_POLICY_PATH not set or missing"
+                return
+            grasp_skill.run_grasp_loop(robot=robot, max_steps=execution.max_steps)
+            execution.steps_completed = execution.max_steps
+            execution.status = "completed"
+            return
+
+        execution.status = "error"
+        execution.error = f"Unknown skill {execution.skill_name}"
 
     except Exception as e:
         execution.status = "error"
@@ -354,7 +561,8 @@ def _run_skill_loop(execution: SkillExecution):
 def start_skill(
     skill_name: str,
     target_object: str = "",
-    max_steps: int = 100
+    max_steps: int = 100,
+    instruction: str = "",
 ) -> Dict[str, Any]:
     """
     Start executing a VLA skill.
@@ -368,7 +576,7 @@ def start_skill(
         Skill execution ID and initial status. Use get_skill_status() to monitor.
     """
     # Validate skill name
-    valid_skills = ["grasp", "search", "home"]
+    valid_skills = ["grasp", "search", "home", "smolvla", "xvla"]
     if skill_name not in valid_skills:
         return {"status": "error", "error": f"Unknown skill: {skill_name}. Valid: {valid_skills}"}
 
@@ -384,6 +592,8 @@ def start_skill(
         status="running",
         max_steps=max_steps
     )
+    execution.target_object = target_object  # type: ignore[attr-defined]
+    execution.instruction = instruction  # type: ignore[attr-defined]
 
     # Start background thread
     thread = threading.Thread(target=_run_skill_loop, args=(execution,), daemon=True)
@@ -395,6 +605,7 @@ def start_skill(
         "skill_id": skill_id,
         "skill_name": skill_name,
         "target_object": target_object,
+        "instruction": instruction,
         "status": "running",
         "max_steps": max_steps
     }
@@ -474,6 +685,31 @@ def list_running_skills() -> List[Dict[str, Any]]:
         }
         for ex in running_skills.values()
     ]
+
+
+@mcp.tool()
+def set_policy(policy_name: str, policy_id: str) -> Dict[str, Any]:
+    """
+    Configure (or replace) a policy checkpoint for a VLA skill.
+
+    Args:
+        policy_name: "smolvla" or "xvla"
+        policy_id: Hugging Face repo id (e.g. "Gurkinator/smolvla_so100_policy") or local folder path.
+
+    Returns:
+        Status (policy is loaded lazily on first use).
+    """
+    policy_name = policy_name.strip().lower()
+    if policy_name not in {"smolvla", "xvla"}:
+        return {"status": "error", "error": "policy_name must be 'smolvla' or 'xvla'"}
+    policy_id = policy_id.strip()
+    if not policy_id:
+        return {"status": "error", "error": "policy_id is required"}
+
+    policy_runners[policy_name] = VLAPolicyRunner(policy_id=policy_id)
+    env_key = f"{policy_name.upper()}_POLICY_ID"
+    os.environ[env_key] = policy_id
+    return {"status": "ok", "policy_name": policy_name, "policy_id": policy_id, "env": env_key}
 
 
 # =============================================================================

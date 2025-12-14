@@ -117,9 +117,9 @@ class SO100DemoConfig:
                 name = f"camera_{i}"
             cameras[name] = OpenCVCameraConfig(
                 index_or_path=cam_idx,
-                width=self.camera_width,
-                height=self.camera_height,
-                fps=self.camera_fps,
+                width=self.camera_width or 640,
+                height=self.camera_height or 480,
+                fps=self.camera_fps or 30,
                 fourcc=self.camera_fourcc,
             )
         return SO100FollowerConfig(
