@@ -413,7 +413,11 @@ async def _teleop_loop(teleop: Teleoperator, fps: int, display_data: bool) -> No
     try:
         while True:
             loop_start = time.perf_counter()
-            obs = robot_interface.robot.get_observation()
+            if streaming:
+                obs = robot_interface.robot.get_observation()
+            else:
+                joints = robot_interface.robot.bus.sync_read("Present_Position")
+                obs = {f"{motor}.pos": val for motor, val in joints.items()}
             raw_action = teleop.get_action()
             robot_interface.robot.send_action(raw_action)
 
@@ -464,6 +468,17 @@ async def _stop_streaming(disconnect_robot: bool = False) -> None:
             robot_interface.disconnect()
         except Exception as e:  # noqa: BLE001
             logger.warning("Error disconnecting robot after stopping stream: %s", e)
+
+
+async def _start_streaming() -> None:
+    """Start camera streaming if teleop is not running."""
+    global streaming, stream_task
+    if teleop_task is not None and not teleop_task.done():
+        return
+    if streaming:
+        return
+    streaming = True
+    stream_task = asyncio.create_task(camera_stream_loop())
 
 
 async def _stop_teleop(disconnect_robot: bool = True) -> None:
@@ -1036,6 +1051,7 @@ async def start_teleop(req: TeleopStartRequest) -> Dict[str, Any]:
 async def stop_teleop() -> Dict[str, Any]:
     async with teleop_process_lock:
         await _stop_teleop(disconnect_robot=True)
+        await _start_streaming()
     return {"ok": True}
 
 

@@ -12,7 +12,6 @@ import numpy as np
 from lerobot.robots.so100_follower import SO100Follower, SO100FollowerConfig
 
 from .config import SO101DemoConfig
-from .mock_robot_interface import MockRobotInterface, make_mock_robot_interface
 
 logger = logging.getLogger(__name__)
 
@@ -188,15 +187,6 @@ class SO101RobotInterface:
 
 
 def make_robot_interface(cfg: SO101DemoConfig) -> SO101RobotInterface | MockRobotInterface:
-    """
-    Factory that returns either a real SO101RobotInterface or a MockRobotInterface
-    depending on the configuration.
-
-    This allows the rest of the demo (server, orchestrator) to be written against
-    a single interface without worrying about hardware availability.
-    """
-
-    if cfg.use_mock:
-        return make_mock_robot_interface(cfg)
+    """Factory that returns a real SO101RobotInterface (mock removed)."""
     robot_cfg: SO100FollowerConfig = cfg.to_robot_config()
     return SO101RobotInterface(robot_cfg)

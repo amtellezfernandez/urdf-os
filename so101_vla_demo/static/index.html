@@ -246,7 +246,14 @@
   <body>
     <header>
       <h1>SO101 VLA Demo</h1>
-      <div id="phase-indicator">Idle</div>
+      <div style="display: flex; gap: 1.5rem; align-items: center;">
+        <div id="teleop-header-config" style="font-size: 0.9rem; color: #9aa0a6; line-height: 1.4;">
+          <div>Leader: <span id="header-leader" style="color: #f5f5f5;">--</span></div>
+          <div>Follower: <span id="header-follower" style="color: #f5f5f5;">--</span></div>
+          <div>Cameras: <span id="header-cameras" style="color: #f5f5f5;">--</span></div>
+        </div>
+        <div id="phase-indicator">Idle</div>
+      </div>
     </header>
 
     <main>
@@ -260,10 +267,6 @@
         <div id="controls">
           <button id="connect-btn">Connect</button>
           <button id="disconnect-btn" disabled>Disconnect</button>
-          <button id="start-stream-btn" disabled>Start Stream</button>
-          <button id="stop-stream-btn" disabled class="secondary">
-            Stop Stream
-          </button>
         </div>
         <div id="status-bar">
           Status: <span id="status-text">Disconnected</span>
@@ -287,28 +290,12 @@
 
         <section id="teleop-section">
           <h2>Teleop Control</h2>
-          <div id="teleop-form">
-            <div id="teleop-config-summary" style="padding: 0.75rem; background: #222; border-radius: 4px; margin: 0.75rem; font-size: 0.85rem;">
-              <div style="margin-bottom: 0.5rem;"><strong>Configuration (from env):</strong></div>
-              <div style="color: #9aa0a6; line-height: 1.6;">
-                <div>Leader: <span id="teleop-leader-summary" style="color: #f5f5f5;">--</span></div>
-                <div>Follower: <span id="teleop-follower-summary" style="color: #f5f5f5;">--</span></div>
-                <div>Cameras: <span id="teleop-cameras-summary" style="color: #f5f5f5;">--</span></div>
-              </div>
-            </div>
-          </div>
           <div id="teleop-actions">
             <button id="start-teleop-btn">Start Teleop</button>
             <button id="stop-teleop-btn" class="secondary" disabled>
               Stop Teleop
             </button>
             <div id="teleop-status" class="muted">Idle</div>
-          </div>
-          <div style="padding: 0 0.75rem 0.65rem">
-            <div class="muted" style="font-size: 0.82rem">
-              Calibration files detected under <code id="calib-root"></code>.
-            </div>
-            <div id="devices-table-wrapper"></div>
           </div>
         </section>
       </div>
@@ -321,12 +308,8 @@
     <script>
       let ws = null;
       let isConnected = false;
-      let deviceConfig = { devices: [], ports_file: "", calibration_root: "" };
-
       const connectBtn = document.getElementById("connect-btn");
       const disconnectBtn = document.getElementById("disconnect-btn");
-      const startStreamBtn = document.getElementById("start-stream-btn");
-      const stopStreamBtn = document.getElementById("stop-stream-btn");
       const sendChatBtn = document.getElementById("send-chat-btn");
       const chatInput = document.getElementById("chat-input");
       const cameraGrid = document.getElementById("camera-grid");
@@ -339,20 +322,10 @@
       const phaseIndicator = document.getElementById("phase-indicator");
       const startTeleopBtn = document.getElementById("start-teleop-btn");
       const stopTeleopBtn = document.getElementById("stop-teleop-btn");
-      const devicesTableWrapper = document.getElementById(
-        "devices-table-wrapper"
-      );
-      const calibRootEl = document.getElementById("calib-root");
       const teleopStatusEl = document.getElementById("teleop-status");
-      const teleopLeaderSummary = document.getElementById(
-        "teleop-leader-summary"
-      );
-      const teleopFollowerSummary = document.getElementById(
-        "teleop-follower-summary"
-      );
-      const teleopCamerasSummary = document.getElementById(
-        "teleop-cameras-summary"
-      );
+      const headerLeader = document.getElementById("header-leader");
+      const headerFollower = document.getElementById("header-follower");
+      const headerCameras = document.getElementById("header-cameras");
 
       function setPhase(phase) {
         phaseIndicator.textContent = phase || "Idle";
@@ -384,8 +357,6 @@
         isConnected = connected;
         connectBtn.disabled = connected;
         disconnectBtn.disabled = !connected;
-        startStreamBtn.disabled = !connected;
-        stopStreamBtn.disabled = !connected;
         sendChatBtn.disabled = !connected;
         chatInput.disabled = !connected;
         statusText.textContent = connected ? "Connected" : "Disconnected";
@@ -394,57 +365,8 @@
         }
       }
 
-      function renderDevicesTable() {
-        if (!deviceConfig.devices.length) {
-          devicesTableWrapper.innerHTML =
-            '<div class="muted">No calibration files detected yet.</div>';
-          return;
-        }
-        const table = document.createElement("table");
-        const thead = document.createElement("thead");
-        const headerRow = document.createElement("tr");
-        ["Role", "Type", "ID", "Port", "Calibration"].forEach((h) => {
-          const th = document.createElement("th");
-          th.textContent = h;
-          headerRow.appendChild(th);
-        });
-        thead.appendChild(headerRow);
-        table.appendChild(thead);
-
-        const tbody = document.createElement("tbody");
-        deviceConfig.devices.forEach((d) => {
-          const tr = document.createElement("tr");
-          const cells = [
-            d.role,
-            d.type,
-            d.id,
-            d.port || "(unset)",
-            d.calibration_path,
-          ];
-          cells.forEach((val) => {
-            const td = document.createElement("td");
-            td.textContent = val;
-            tr.appendChild(td);
-          });
-          tbody.appendChild(tr);
-        });
-        table.appendChild(tbody);
-        devicesTableWrapper.innerHTML = "";
-        devicesTableWrapper.appendChild(table);
-      }
-
-
       async function refreshDeviceConfig() {
-        try {
-          const res = await fetch("/api/device-config");
-          const data = await res.json();
-          deviceConfig = data;
-          calibRootEl.textContent = deviceConfig.calibration_root || "";
-          renderDevicesTable();
-        } catch (err) {
-          console.error(err);
-          appendReasoning("Could not load device config from backend.");
-        }
+        // Deprecated: device table removed from UI.
       }
 
 
@@ -473,14 +395,14 @@
           const follower = `${data.robot_id || "(unset)"} @ ${
             data.robot_port || "(unset)"
           }`;
-          teleopLeaderSummary.textContent = leader;
-          teleopFollowerSummary.textContent = follower;
-          teleopCamerasSummary.textContent = data.cameras || "(none)";
+          headerLeader.textContent = leader;
+          headerFollower.textContent = follower;
+          headerCameras.textContent = data.cameras || "(none)";
         } catch (err) {
           console.error(err);
-          teleopLeaderSummary.textContent = "(error)";
-          teleopFollowerSummary.textContent = "(error)";
-          teleopCamerasSummary.textContent = "(error)";
+          headerLeader.textContent = "(error)";
+          headerFollower.textContent = "(error)";
+          headerCameras.textContent = "(error)";
         }
       }
 
@@ -629,14 +551,6 @@
         if (ws) {
           ws.close();
         }
-      });
-
-      startStreamBtn.addEventListener("click", () => {
-        sendJson({ type: "command", action: "start_stream" });
-      });
-
-      stopStreamBtn.addEventListener("click", () => {
-        sendJson({ type: "command", action: "stop_stream" });
       });
 
       sendChatBtn.addEventListener("click", () => {
