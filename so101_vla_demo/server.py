@@ -47,10 +47,7 @@ from PIL import Image
 from .config import SO101DemoConfig, _parse_camera_names, _parse_camera_sources
 from .llm_config import LLMConfig
 from .llm_engine import BaseLLMEngine, StubEngine, make_llm_engine, ROBOT_TOOLS
-from .mock_robot_interface import MockRobotInterface
 from .robot_interface import SO101RobotInterface, make_robot_interface
-from .search_skill import SearchPolicySkill
-from .grasp_skill import GraspPolicySkill
 from lerobot.utils.constants import HF_LEROBOT_CALIBRATION
 from lerobot.teleoperators import Teleoperator, make_teleoperator_from_config, so101_leader
 
@@ -503,7 +500,7 @@ async def _stop_teleop(disconnect_robot: bool = True) -> None:
 
 
 def _is_mock_robot() -> bool:
-    return isinstance(robot_interface, MockRobotInterface)
+    return False
 
 
 async def _mock_search_and_grasp(object_name: str) -> None:

@@ -91,14 +91,11 @@ class SO101DemoConfig:
     # Camera names corresponding to each index
     camera_names: List[str] = field(default_factory=_parse_camera_names)
     demo_fps: int = 15
-    # If True, use a local mock robot instead of real SO101 hardware.
-    # This is useful for running the demo on any laptop / VM.
-    use_mock: bool = os.environ.get("USE_MOCK_ROBOT", "false").lower() in {"1", "true", "yes"}
-    # Optional sources for mock camera images.
-    mock_video_path: Optional[str] = os.environ.get("MOCK_VIDEO_PATH")
-    mock_static_image_path: Optional[str] = os.environ.get("MOCK_STATIC_IMAGE_PATH")
-    # In mock mode, optionally stream from real cameras instead of synthetic frames.
-    use_real_cameras: bool = field(default_factory=_use_real_cameras)
+    # Mock mode removed; always use real robot.
+    use_mock: bool = False
+    mock_video_path: Optional[str] = None
+    mock_static_image_path: Optional[str] = None
+    use_real_cameras: bool = False
     # Camera capture settings (leave unset to use each camera's defaults).
     camera_width: int | None = field(default_factory=lambda: _parse_optional_int("SO101_CAMERA_WIDTH"))
     camera_height: int | None = field(default_factory=lambda: _parse_optional_int("SO101_CAMERA_HEIGHT"))
