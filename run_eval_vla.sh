@@ -5,6 +5,11 @@
 
 set -euo pipefail
 
+# Activate conda environment
+source /home/shrek/miniconda3/etc/profile.d/conda.sh
+conda activate lerobot
+export PYTHONPATH=/home/shrek/urdf-os/src
+
 # Robot + camera defaults (override via env).
 SO101_PORT=${SO101_PORT:-/dev/ttyACM0}               # follower on port 0
 SO101_ROBOT_ID=${SO101_ROBOT_ID:-my_awesome_follower_arm}

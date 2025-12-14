@@ -9,7 +9,7 @@ from typing import Any, Dict, Tuple
 
 import numpy as np
 
-from lerobot.robots.so100_follower import SO100Follower, SO100FollowerConfig
+from lerobot.robots.so101_follower import SO101Follower, SO101FollowerConfig
 
 from .config import SO101DemoConfig
 
@@ -58,8 +58,8 @@ class SO101RobotInterface:
     - send a joint-space command
     """
 
-    config: SO100FollowerConfig
-    robot: SO100Follower | None = None
+    config: SO101FollowerConfig
+    robot: SO101Follower | None = None
     _connected: bool = False
 
     def connect(self) -> None:
@@ -111,15 +111,15 @@ class SO101RobotInterface:
                         )
 
                 self.config.port = port
-                self.robot = SO100Follower(self.config)
-                logger.info("Connecting SO100Follower on port=%s ...", port)
+                self.robot = SO101Follower(self.config)
+                logger.info("Connecting SO101Follower on port=%s ...", port)
                 self.robot.connect(calibrate=calibrate)
                 self._connected = True
-                logger.info("SO100Follower connected on port=%s.", port)
+                logger.info("SO101Follower connected on port=%s.", port)
                 return
             except Exception as e:  # noqa: BLE001
                 last_err = e
-                logger.warning("Failed to connect SO100Follower on port=%s: %s", port, e)
+                logger.warning("Failed to connect SO101Follower on port=%s: %s", port, e)
                 try:
                     if self.robot is not None and self.robot.is_connected:
                         self.robot.disconnect()
@@ -140,7 +140,7 @@ class SO101RobotInterface:
                     " If you're on Linux, you likely need serial permissions: "
                     "run `sudo usermod -a -G dialout $USER` then log out/in."
                 )
-        raise RuntimeError(f"Could not connect SO100Follower. Tried ports={ports_to_try}. {hint}{perm_hint}") from last_err
+        raise RuntimeError(f"Could not connect SO101Follower. Tried ports={ports_to_try}. {hint}{perm_hint}") from last_err
 
     def disconnect(self) -> None:
         if self.robot is None:
@@ -202,7 +202,7 @@ class SO101RobotInterface:
         self.robot.send_action(action)
 
 
-def make_robot_interface(cfg: SO101DemoConfig) -> SO101RobotInterface | MockRobotInterface:
-    """Factory that returns a real SO101RobotInterface (mock removed)."""
-    robot_cfg: SO100FollowerConfig = cfg.to_robot_config()
+def make_robot_interface(cfg: SO101DemoConfig) -> SO101RobotInterface:
+    """Factory that returns a real SO101RobotInterface."""
+    robot_cfg: SO101FollowerConfig = cfg.to_robot_config()
     return SO101RobotInterface(robot_cfg)

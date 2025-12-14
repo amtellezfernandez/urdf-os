@@ -5,6 +5,10 @@
 pkill -f mcp_server 2>/dev/null || true
 sleep 2
 
+# Activate conda environment
+source /home/shrek/miniconda3/etc/profile.d/conda.sh
+conda activate lerobot
+
 # Configuration
 export PYTHONPATH=/home/shrek/urdf-os/src
 export SMOLVLA_POLICY_ID="Gurkinator/smolvla_so101_policy"

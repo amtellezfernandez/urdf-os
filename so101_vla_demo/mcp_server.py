@@ -183,6 +183,18 @@ class VLAPolicyRunner:
         # Backward-compat: if the config didn't list an image key, still provide one.
         raw_batch.setdefault(OBS_IMAGE, default_img_chw)
 
+        # Convert numpy arrays to torch tensors and add batch dimension
+        # Policy expects (B, C, H, W) but raw_batch has (C, H, W) numpy arrays
+        for key in list(raw_batch.keys()):
+            val = raw_batch[key]
+            if isinstance(val, np.ndarray):
+                if key == OBS_IMAGE or key.startswith(f"{OBS_IMAGES}."):
+                    # Image: (C, H, W) -> (1, C, H, W)
+                    raw_batch[key] = torch.from_numpy(val).unsqueeze(0).float()
+                elif key == OBS_STATE:
+                    # State: (D,) -> (1, D)
+                    raw_batch[key] = torch.from_numpy(val).unsqueeze(0).float()
+
         processed_batch = self.preprocessor(raw_batch)
         with torch.no_grad():
             action: torch.Tensor = self.policy.select_action(processed_batch)

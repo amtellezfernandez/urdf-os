@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
-from lerobot.robots.so100_follower import SO100FollowerConfig
+from lerobot.robots.so101_follower import SO101FollowerConfig
 
 
 def _parse_camera_sources() -> List[int | Path]:
@@ -107,8 +107,8 @@ class SO101DemoConfig:
     # Optional path to a trained grasp policy checkpoint (e.g. SmolVLA/XVLA, HuggingFace repo_id)
     grasp_policy_path: Optional[str] = os.environ.get("GRASP_POLICY_PATH")
 
-    def to_robot_config(self) -> SO100FollowerConfig:
-        """Build SO100FollowerConfig with multiple cameras."""
+    def to_robot_config(self) -> SO101FollowerConfig:
+        """Build SO101FollowerConfig with multiple cameras."""
         cameras = {}
         for i, cam_idx in enumerate(self.camera_indexes):
             # Use camera name if available, otherwise generate one
@@ -123,7 +123,7 @@ class SO101DemoConfig:
                 fps=self.camera_fps or 30,
                 fourcc=self.camera_fourcc,
             )
-        return SO100FollowerConfig(
+        return SO101FollowerConfig(
             port=self.port,
             cameras=cameras,
             id=self.robot_id,
